@@ -33,10 +33,6 @@ export function ChatbotWidget() {
   const smallChatMessagesRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    if (isExpanded && messages.length === 0 && smallChatMessages.length > 1) {
-      // Copy messages from small chat to expanded view (excluding initial greeting)
-      setMessages(smallChatMessages.filter((msg) => msg.id !== "1"))
-    }
     if (!isExpanded) {
       setMessages([])
     }
