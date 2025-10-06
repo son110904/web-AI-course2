@@ -37,10 +37,13 @@ export function ChatbotWidget() {
       // Copy messages from small chat to expanded view (excluding initial greeting)
       setMessages(smallChatMessages.filter((msg) => msg.id !== "1"))
     }
+    if (!isExpanded) {
+      setMessages([])
+    }
   }, [isExpanded])
 
   useEffect(() => {
-    if (isExpanded) {
+    if (isExpanded && messages.length > 0) {
       messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
     } else if (isOpen && smallChatMessagesRef.current) {
       smallChatMessagesRef.current.scrollTop = smallChatMessagesRef.current.scrollHeight
@@ -102,71 +105,98 @@ export function ChatbotWidget() {
             >
               <ArrowLeft className="h-5 w-5" />
             </Button>
-            <img src="/logo-neu.png" alt="Logo Đại học Kinh tế Quốc dân" className="w-12 h-12 object-contain" />
+            <img
+              src="/neu_panda-modified.png"
+              alt="Logo Đại học Kinh tế Quốc dân"
+              className="w-12 h-12 object-contain"
+            />
             <h1 className="text-lg font-semibold">Đại học Kinh tế Quốc dân</h1>
           </div>
         </header>
 
         {showWelcomeScreen ? (
-          <main className="flex-1 bg-white flex items-center justify-center pb-32">
-            <div className="w-full max-w-3xl mx-auto text-center space-y-6 px-6">
-              <h2 className="text-5xl font-bold text-gray-900">Courses AIChatbot</h2>
-              <p className="text-gray-600 text-lg">
-                Hỏi đáp về Chương trình đào tạo, đề cương,... của Đại học Kinh tế Quốc dân.
-              </p>
-            </div>
-          </main>
-        ) : (
-          <main className="flex-1 bg-white overflow-y-auto pb-32">
-            <div className="w-full max-w-3xl mx-auto flex flex-col py-8 px-6">
-              <div className="space-y-3 px-4 min-h-[200px]">
-                {messages.map((message) => (
-                  <div
-                    key={message.id}
-                    className={cn("flex", message.sender === "user" ? "justify-end" : "justify-start")}
-                  >
-                    <div
-                      className={cn(
-                        "max-w-[70%] rounded-lg px-4 py-3",
-                        message.sender === "user" ? "bg-[#0066B3] text-white" : "bg-gray-100 text-gray-900",
-                      )}
-                    >
-                      <p className="text-sm leading-relaxed">{message.text}</p>
-                    </div>
-                  </div>
-                ))}
-                <div ref={messagesEndRef} />
+          <main className="flex-1 bg-white flex items-center justify-center">
+            <div className="w-full max-w-3xl mx-auto text-center space-y-8 px-6">
+              <div className="space-y-4">
+                <h2 className="text-5xl font-bold text-gray-900">Courses AIChatbot</h2>
+                <p className="text-gray-600 text-lg">
+                  Hỏi đáp về Chương trình đào tạo, đề cương,... của Đại học Kinh tế Quốc dân.
+                </p>
+              </div>
+              <div className="flex items-center gap-3 border border-gray-300 rounded-full px-4 py-3 bg-white shadow-sm hover:shadow-md transition-shadow max-w-2xl mx-auto">
+                <Button variant="ghost" size="icon" className="text-gray-500 hover:text-gray-700 h-8 w-8">
+                  <Paperclip className="h-4 w-4" />
+                </Button>
+                <Input
+                  value={inputValue}
+                  onChange={(e) => setInputValue(e.target.value)}
+                  onKeyPress={handleKeyPress}
+                  placeholder="Hỏi Courses AIChatbot..."
+                  className="flex-1 border-0 text-sm focus-visible:ring-0 focus-visible:ring-offset-0 px-0 h-8"
+                />
+                <Button
+                  onClick={handleSend}
+                  size="icon"
+                  className="bg-transparent hover:bg-gray-100 text-gray-700 rounded-full h-8 w-8"
+                >
+                  <Send className="h-4 w-4" />
+                </Button>
               </div>
             </div>
           </main>
-        )}
+        ) : (
+          <>
+            <main className="flex-1 bg-white overflow-y-auto pb-24">
+              <div className="w-full max-w-3xl mx-auto flex flex-col py-8 px-6">
+                <div className="space-y-3 px-4 min-h-[200px]">
+                  {messages.map((message) => (
+                    <div
+                      key={message.id}
+                      className={cn("flex", message.sender === "user" ? "justify-end" : "justify-start")}
+                    >
+                      <div
+                        className={cn(
+                          "max-w-[70%] rounded-lg px-4 py-3",
+                          message.sender === "user" ? "bg-[#0066B3] text-white" : "bg-gray-100 text-gray-900",
+                        )}
+                      >
+                        <p className="text-sm leading-relaxed">{message.text}</p>
+                      </div>
+                    </div>
+                  ))}
+                  <div ref={messagesEndRef} />
+                </div>
+              </div>
+            </main>
 
-        <div
-          className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 z-10"
-          style={{ bottom: "140px" }}
-        >
-          <div className="w-full max-w-3xl mx-auto px-6 py-3">
-            <div className="flex items-center gap-3 border border-gray-300 rounded-full px-4 py-2.5 bg-white shadow-sm hover:shadow-md transition-shadow">
-              <Button variant="ghost" size="icon" className="text-gray-500 hover:text-gray-700 h-8 w-8">
-                <Paperclip className="h-4 w-4" />
-              </Button>
-              <Input
-                value={inputValue}
-                onChange={(e) => setInputValue(e.target.value)}
-                onKeyPress={handleKeyPress}
-                placeholder="Hỏi Courses AIChatbot..."
-                className="flex-1 border-0 text-sm focus-visible:ring-0 focus-visible:ring-offset-0 px-0 h-8"
-              />
-              <Button
-                onClick={handleSend}
-                size="icon"
-                className="bg-transparent hover:bg-gray-100 text-gray-700 rounded-full h-8 w-8"
-              >
-                <Send className="h-4 w-4" />
-              </Button>
+            <div
+              className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 z-10"
+              style={{ bottom: "140px" }}
+            >
+              <div className="w-full max-w-3xl mx-auto px-6 py-3">
+                <div className="flex items-center gap-3 border border-gray-300 rounded-full px-4 py-2.5 bg-white shadow-sm hover:shadow-md transition-shadow">
+                  <Button variant="ghost" size="icon" className="text-gray-500 hover:text-gray-700 h-8 w-8">
+                    <Paperclip className="h-4 w-4" />
+                  </Button>
+                  <Input
+                    value={inputValue}
+                    onChange={(e) => setInputValue(e.target.value)}
+                    onKeyPress={handleKeyPress}
+                    placeholder="Hỏi Courses AIChatbot..."
+                    className="flex-1 border-0 text-sm focus-visible:ring-0 focus-visible:ring-offset-0 px-0 h-8"
+                  />
+                  <Button
+                    onClick={handleSend}
+                    size="icon"
+                    className="bg-transparent hover:bg-gray-100 text-gray-700 rounded-full h-8 w-8"
+                  >
+                    <Send className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
+          </>
+        )}
 
         <div className="flex-shrink-0">
           <Footer />
