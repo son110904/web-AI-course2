@@ -46,37 +46,55 @@ export function ChatbotWidget() {
     }
   }, [messages, smallChatMessages, isExpanded, isOpen])
 
-  const handleSend = () => {
-    if (!inputValue.trim()) return
+  const handleSend = async () => {
+  if (!inputValue.trim()) return;
 
-    const userMessage: Message = {
-      id: Date.now().toString(),
-      text: inputValue,
-      sender: "user",
+  const userMessage: Message = {
+    id: Date.now().toString(),
+    text: inputValue,
+    sender: "user",
+    timestamp: new Date(),
+  };
+
+  const currentMessages = isExpanded ? messages : smallChatMessages;
+  const setCurrentMessages = isExpanded ? setMessages : setSmallChatMessages;
+
+  setCurrentMessages((prev) => [...prev, userMessage]);
+  setInputValue("");
+
+  try {
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messages: [...currentMessages, userMessage].map((m) => ({
+          role: m.sender === "user" ? "user" : "assistant",
+          content: m.text,
+        })),
+      }),
+    });
+
+    const data = await res.json();
+    const botText = data.botMessage || "Xin lỗi, có lỗi xảy ra.";
+
+    const botMessage: Message = {
+      id: (Date.now() + 1).toString(),
+      text: botText,
+      sender: "bot",
       timestamp: new Date(),
-    }
+    };
 
-    if (isExpanded) {
-      setMessages((prev) => [...prev, userMessage])
-    } else {
-      setSmallChatMessages((prev) => [...prev, userMessage])
-    }
-    setInputValue("")
-
-    setTimeout(() => {
-      const botMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        text: "Cảm ơn bạn đã hỏi. Tôi sẽ giúp bạn tìm thông tin.",
-        sender: "bot",
-        timestamp: new Date(),
-      }
-      if (isExpanded) {
-        setMessages((prev) => [...prev, botMessage])
-      } else {
-        setSmallChatMessages((prev) => [...prev, botMessage])
-      }
-    }, 1000)
+    setCurrentMessages((prev) => [...prev, botMessage]);
+  } catch (error) {
+    const botMessage: Message = {
+      id: (Date.now() + 1).toString(),
+      text: "Không kết nối được với server. Kiểm tra mạng hoặc thử lại sau nhé!",
+      sender: "bot",
+      timestamp: new Date(),
+    };
+    setCurrentMessages((prev) => [...prev, botMessage]);
   }
+};
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -270,7 +288,7 @@ export function ChatbotWidget() {
       className="bg-[#0066B3] hover:bg-[#0052A3] text-white rounded-full px-5 py-6 shadow-2xl flex items-center gap-2 whitespace-nowrap"
     >
       <MessageCircle className="h-5 w-5" />
-      <span className="font-semibold text-sm">Courses AIChatbot</span>
+      <span className="font-semibold text-sm">Courses AI Chatbot</span>
     </Button>
   )
 }
