@@ -1,7 +1,7 @@
 "use client"
 
 import type React from "react"
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect, useRef, use } from "react"
 import { MessageCircle, Maximize2, Send, Minus, ArrowLeft, Paperclip } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -63,7 +63,7 @@ export function ChatbotWidget() {
   setInputValue("");
 
   try {
-    const res = await fetch("/api/chat", {
+    const res = await fetch("/api", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -196,7 +196,7 @@ export function ChatbotWidget() {
                     value={inputValue}
                     onChange={(e) => setInputValue(e.target.value)}
                     onKeyPress={handleKeyPress}
-                    placeholder="Hỏi Courses AIChatbot..."
+                    placeholder="Hỏi Courses AI Chatbot..."
                     className="flex-1 border-0 text-sm focus-visible:ring-0 focus-visible:ring-offset-0 px-0 h-8"
                   />
                   <Button
@@ -270,7 +270,7 @@ export function ChatbotWidget() {
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
               onKeyPress={handleKeyPress}
-              placeholder="Hỏi Courses AIChatbot..."
+              placeholder="Hỏi Courses AI Chatbot..."
               className="flex-1 text-sm h-9 border-gray-300"
             />
             <Button onClick={handleSend} size="icon" className="bg-[#0066B3] hover:bg-[#0052A3] text-white h-9 w-9">
