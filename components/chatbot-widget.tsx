@@ -1,7 +1,7 @@
 "use client"
 
 import type React from "react"
-import { useState, useEffect, useRef, use } from "react"
+import { useState, useEffect, useRef } from "react"
 import { MessageCircle, Maximize2, Send, Minus, ArrowLeft, Paperclip } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -19,82 +19,68 @@ export function ChatbotWidget() {
   const [isOpen, setIsOpen] = useState(false)
   const [isExpanded, setIsExpanded] = useState(false)
   const [messages, setMessages] = useState<Message[]>([])
-  const [smallChatMessages, setSmallChatMessages] = useState<Message[]>([
-    {
-      id: "1",
-      text: "Nếu có thắc mắc, hãy hỏi mình nhé!",
-      sender: "bot",
-      timestamp: new Date(),
-    },
-  ])
   const [inputValue, setInputValue] = useState("")
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const smallChatMessagesRef = useRef<HTMLDivElement>(null)
 
-  useEffect(() => {
-    if (!isExpanded) {
-      setMessages([])
-    }
-  }, [isExpanded])
-
+  // Scroll xuống cuối khi có tin nhắn mới
   useEffect(() => {
     if (isExpanded && messages.length > 0) {
       messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
-    } else if (isOpen && smallChatMessagesRef.current) {
+    } else if (isOpen && !isExpanded && smallChatMessagesRef.current) {
       smallChatMessagesRef.current.scrollTop = smallChatMessagesRef.current.scrollHeight
     }
-  }, [messages, smallChatMessages, isExpanded, isOpen])
+  }, [messages, isExpanded, isOpen])
 
   const handleSend = async () => {
-  if (!inputValue.trim()) return;
+    if (!inputValue.trim()) return
 
-  const userMessage: Message = {
-    id: Date.now().toString(),
-    text: inputValue,
-    sender: "user",
-    timestamp: new Date(),
-  };
-
-  const currentMessages = isExpanded ? messages : smallChatMessages;
-  const setCurrentMessages = isExpanded ? setMessages : setSmallChatMessages;
-
-  setCurrentMessages((prev) => [...prev, userMessage]);
-  setInputValue("");
-
-  try {
-    const res = await fetch("/api", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        messages: [...currentMessages, userMessage].map((m) => ({
-          role: m.sender === "user" ? "user" : "assistant",
-          content: m.text,
-        })),
-      }),
-    });
-
-    const data = await res.json();
-    const botText = data.botMessage || "Xin lỗi, có lỗi xảy ra.";
-
-    const botMessage: Message = {
-      id: (Date.now() + 1).toString(),
-      text: botText,
-      sender: "bot",
+    const userMessage: Message = {
+      id: Date.now().toString(),
+      text: inputValue,
+      sender: "user",
       timestamp: new Date(),
-    };
+    }
 
-    setCurrentMessages((prev) => [...prev, botMessage]);
-  } catch (error) {
-    const botMessage: Message = {
-      id: (Date.now() + 1).toString(),
-      text: "Không kết nối được với server. Kiểm tra mạng hoặc thử lại sau nhé!",
-      sender: "bot",
-      timestamp: new Date(),
-    };
-    setCurrentMessages((prev) => [...prev, botMessage]);
+    setMessages((prev) => [...prev, userMessage])
+    setInputValue("")
+
+    try {
+      const res = await fetch("/api", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: [...messages, userMessage].map((m) => ({
+            role: m.sender === "user" ? "user" : "assistant",
+            content: m.text,
+          })),
+        }),
+      })
+
+      if (!res.ok) throw new Error("Network error")
+
+      const data = await res.json()
+      const botText = data.botMessage || "Xin lỗi, có lỗi xảy ra. Hãy thử lại nhé!"
+
+      const botMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        text: botText,
+        sender: "bot",
+        timestamp: new Date(),
+      }
+
+      setMessages((prev) => [...prev, botMessage])
+    } catch (error) {
+      const errorMessage: Message = {
+        id: Date.now().toString(),
+        text: "Không kết nối được với server. Kiểm tra mạng hoặc thử lại sau nhé!",
+        sender: "bot",
+        timestamp: new Date(),
+      }
+      setMessages((prev) => [...prev, errorMessage])
+    }
   }
-};
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -103,6 +89,20 @@ export function ChatbotWidget() {
     }
   }
 
+  // Nút nổi để mở mini chat
+  if (!isOpen && !isExpanded) {
+    return (
+      <Button
+        onClick={() => setIsOpen(true)}
+        className="fixed bottom-[170px] right-[54px] z-50 bg-[#0066B3] hover:bg-[#0052A3] text-white rounded-full px-5 py-6 shadow-2xl flex items-center gap-2 whitespace-nowrap"
+      >
+        <MessageCircle className="h-5 w-5" />
+        <span className="font-semibold text-sm">Courses AI Chatbot</span>
+      </Button>
+    )
+  }
+
+  // Full screen mode
   if (isExpanded) {
     const showWelcomeScreen = messages.length === 0
 
@@ -196,7 +196,7 @@ export function ChatbotWidget() {
                     value={inputValue}
                     onChange={(e) => setInputValue(e.target.value)}
                     onKeyPress={handleKeyPress}
-                    placeholder="Hỏi Courses AI Chatbot..."
+                    placeholder="Hỏi Courses AIChatbot..."
                     className="flex-1 border-0 text-sm focus-visible:ring-0 focus-visible:ring-offset-0 px-0 h-8"
                   />
                   <Button
@@ -219,76 +219,78 @@ export function ChatbotWidget() {
     )
   }
 
-  if (isOpen) {
-    return (
-      <div className="fixed bottom-[170px] right-[54px] z-50 w-[280px] h-[320px] bg-white rounded-lg shadow-2xl flex flex-col overflow-hidden border border-gray-200">
-        <div className="bg-[#0066B3] text-white px-3 py-2.5 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <MessageCircle className="h-4 w-4" />
-            <span className="font-semibold text-sm">Courses AIChatbot</span>
-          </div>
-          <div className="flex items-center gap-0.5">
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => setIsExpanded(true)}
-              className="h-7 w-7 text-white hover:bg-white/20 rounded"
-              title="Mở rộng"
-            >
-              <Maximize2 className="h-4 w-4" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => setIsOpen(false)}
-              className="h-7 w-7 text-white hover:bg-white/20 rounded"
-              title="Thu nhỏ"
-            >
-              <Minus className="h-4 w-4" />
-            </Button>
-          </div>
+  // Mini chat mode
+  return (
+    <div className="fixed bottom-[170px] right-[54px] z-50 w-[280px] h-[320px] bg-white rounded-lg shadow-2xl flex flex-col overflow-hidden border border-gray-200">
+      <div className="bg-[#0066B3] text-white px-3 py-2.5 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <MessageCircle className="h-4 w-4" />
+          <span className="font-semibold text-sm">Courses AIChatbot</span>
         </div>
-
-        <div ref={smallChatMessagesRef} className="flex-1 overflow-y-auto p-3 space-y-2 bg-white">
-          {smallChatMessages.map((message) => (
-            <div key={message.id} className={cn("flex", message.sender === "user" ? "justify-end" : "justify-start")}>
-              <div
-                className={cn(
-                  "max-w-[85%] rounded-lg px-3 py-2",
-                  message.sender === "user" ? "bg-[#0066B3] text-white" : "bg-gray-100 text-gray-900",
-                )}
-              >
-                <p className="text-sm leading-relaxed">{message.text}</p>
-              </div>
-            </div>
-          ))}
-        </div>
-
-        <div className="border-t bg-white p-2.5">
-          <div className="flex items-center gap-2">
-            <Input
-              value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
-              onKeyPress={handleKeyPress}
-              placeholder="Hỏi Courses AI Chatbot..."
-              className="flex-1 text-sm h-9 border-gray-300"
-            />
-            <Button onClick={handleSend} size="icon" className="bg-[#0066B3] hover:bg-[#0052A3] text-white h-9 w-9">
-              <Send className="h-4 w-4" />
-            </Button>
-          </div>
+        <div className="flex items-center gap-0.5">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => setIsExpanded(true)}
+            className="h-7 w-7 text-white hover:bg-white/20 rounded"
+            title="Mở rộng"
+          >
+            <Maximize2 className="h-4 w-4" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => setIsOpen(false)}
+            className="h-7 w-7 text-white hover:bg-white/20 rounded"
+            title="Thu nhỏ"
+          >
+            <Minus className="h-4 w-4" />
+          </Button>
         </div>
       </div>
-    )
-  }
 
-  return (
-    <Button
-      onClick={() => setIsOpen(true)}
-      className="bg-[#0066B3] hover:bg-[#0052A3] text-white rounded-full px-5 py-6 shadow-2xl flex items-center gap-2 whitespace-nowrap"
-    >
-      <MessageCircle className="h-5 w-5" />
-      <span className="font-semibold text-sm">Courses AI Chatbot</span>
-    </Button>
+      <div ref={smallChatMessagesRef} className="flex-1 overflow-y-auto p-3 space-y-2 bg-white">
+        {/* Tin nhắn chào mặc định nếu chưa có tin nào */}
+        {messages.length === 0 && (
+          <div className="flex justify-start">
+            <div className="max-w-[85%] rounded-lg px-3 py-2 bg-gray-100 text-gray-900">
+              <p className="text-sm leading-relaxed">Nếu có thắc mắc, hãy hỏi mình nhé!</p>
+            </div>
+          </div>
+        )}
+
+        {/* Hiển thị tất cả tin nhắn */}
+        {messages.map((message) => (
+          <div
+            key={message.id}
+            className={cn("flex", message.sender === "user" ? "justify-end" : "justify-start")}
+          >
+            <div
+              className={cn(
+                "max-w-[85%] rounded-lg px-3 py-2",
+                message.sender === "user" ? "bg-[#0066B3] text-white" : "bg-gray-100 text-gray-900",
+              )}
+            >
+              <p className="text-sm leading-relaxed">{message.text}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="border-t bg-white p-2.5">
+        <div className="flex items-center gap-2">
+          <Input
+            value={inputValue}
+            onChange={(e) => setInputValue(e.target.value)}
+            onKeyPress={handleKeyPress}
+            placeholder="Hỏi Courses AIChatbot..."
+            className="flex-1 text-sm h-9 border-gray-300"
+          />
+          <Button onClick={handleSend} size="icon" className="bg-[#0066B3] hover:bg-[#0052A3] text-white h-9 w-9">
+            <Send className="h-4 w-4" />
+          </Button>
+        </div>
+      </div>
+    </div>
   )
 }
