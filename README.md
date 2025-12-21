@@ -39,5 +39,21 @@ yarn dev
 
 Ứng dụng sẽ chạy tại [http://localhost:3000](http://localhost:3000) (hoặc cổng được cấu hình trong dự án)
 
+### 3. Thiết lập API
+Sử dụng npm:
+```bash
+npm install
+```
 
+Start infrastructure
+```bash
+docker-compose up -d
+
+# Xem logs Ollama (đợi model download xong)
+docker-compose logs -f ollama
+```
+Start API
+```bash
+npm run dev
+```
 
