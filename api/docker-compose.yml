@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: chatbot-postgres
+    environment:
+      POSTGRES_USER: raguser
+      POSTGRES_PASSWORD: ragpass123
+      POSTGRES_DB: ragdb
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U raguser"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: chatbot-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        ollama serve &
+        sleep 10
+        ollama pull llama3.2:3b
+        wait
+
+volumes:
+  postgres_data:
+  ollama_data:
