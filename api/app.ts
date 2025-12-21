@@ -1,14 +1,15 @@
 import express, { Express, Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import { DatabaseModel } from './models/database.model';
-import { MinIOModel } from './models/minio.model';
-import { EmbeddingService } from './services/embedding.service';
-import { DocumentService } from './services/document.service';
-import { RAGService } from './services/rag.service';
-import { ChatController } from './controllers/chat.controller';
-import { UploadController } from './controllers/upload.controller';
-import { createRoutes } from './routes';
+import { DatabaseModel } from './src/models/database.model';
+import { MinIOModel } from './src/models/minio.model';
+import { EmbeddingService } from './src/services/embedding.service';
+import { DocumentService } from './src/services/document.service';
+import { RAGService } from './src/services/rag.service';
+import { ChatController } from './src/controllers/chat.controller';
+import { UploadController } from './src/controllers/upload.controller';
+import { createRoutes } from './src/routes';
+
 
 dotenv.config();
 
