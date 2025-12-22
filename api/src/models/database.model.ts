@@ -12,6 +12,8 @@ export interface SearchResult {
   similarity: number;
 }
 
+const VECTOR_DIM = 384; 
+
 export class DatabaseModel {
   private pool: Pool;
 
@@ -41,7 +43,7 @@ export class DatabaseModel {
           document_id UUID REFERENCES documents(id) ON DELETE CASCADE,
           content TEXT NOT NULL,
           chunk_index INTEGER,
-          embedding VECTOR(768),
+          embedding VECTOR(${VECTOR_DIM}),
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
       `);
@@ -64,7 +66,7 @@ export class DatabaseModel {
     chunk_index: number;
     embedding: number[];
   }): Promise<void> {
-    if (params.embedding.length !== 768) {
+    if (params.embedding.length !== VECTOR_DIM) {
       throw new Error(`Embedding dimension mismatch: ${params.embedding.length}`);
     }
 
@@ -81,7 +83,7 @@ export class DatabaseModel {
     queryEmbedding: number[],
     limit = 5
   ): Promise<SearchResult[]> {
-    if (queryEmbedding.length !== 768) {
+    if (queryEmbedding.length !== VECTOR_DIM) {
       throw new Error(`Query embedding dimension mismatch: ${queryEmbedding.length}`);
     }
 
