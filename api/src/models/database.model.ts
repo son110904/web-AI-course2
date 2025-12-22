@@ -1,23 +1,5 @@
 import { Pool } from 'pg';
 
-export interface Document {
-  id: string;
-  filename: string;
-  file_path: string;
-  file_size: number;
-  content_type: string;
-  uploaded_at: Date;
-}
-
-export interface Chunk {
-  id: string;
-  document_id: string;
-  content: string;
-  chunk_index: number;
-  embedding?: number[];
-  created_at: Date;
-}
-
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
@@ -45,10 +27,10 @@ export class DatabaseModel {
       await client.query(`
         CREATE TABLE IF NOT EXISTS documents (
           id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-          filename VARCHAR(255) NOT NULL,
-          file_path VARCHAR(500) NOT NULL,
+          filename TEXT NOT NULL,
+          file_path TEXT NOT NULL,
           file_size INTEGER,
-          content_type VARCHAR(100),
+          content_type TEXT,
           uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
       `);
@@ -59,72 +41,66 @@ export class DatabaseModel {
           document_id UUID REFERENCES documents(id) ON DELETE CASCADE,
           content TEXT NOT NULL,
           chunk_index INTEGER,
-          embedding vector(384),
+          embedding VECTOR(768),
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
       `);
 
       await client.query(`
-        CREATE INDEX IF NOT EXISTS chunks_embedding_idx 
+        CREATE INDEX IF NOT EXISTS chunks_embedding_idx
         ON chunks USING ivfflat (embedding vector_cosine_ops)
         WITH (lists = 100)
       `);
 
       console.log('✓ Database initialized');
-    } catch (error) {
-      console.error('✗ Database error:', error);
-      throw error;
     } finally {
       client.release();
     }
   }
 
-  async insertDocument(doc: Omit<Document, 'id' | 'uploaded_at'>): Promise<string> {
-    const result = await this.pool.query(
-      `INSERT INTO documents (filename, file_path, file_size, content_type) 
-       VALUES ($1, $2, $3, $4) RETURNING id`,
-      [doc.filename, doc.file_path, doc.file_size, doc.content_type]
+  async insertChunk(params: {
+    document_id: string;
+    content: string;
+    chunk_index: number;
+    embedding: number[];
+  }): Promise<void> {
+    if (params.embedding.length !== 768) {
+      throw new Error(`Embedding dimension mismatch: ${params.embedding.length}`);
+    }
+
+    const embeddingStr = `[${params.embedding.join(',')}]`;
+
+    await this.pool.query(
+      `INSERT INTO chunks (document_id, content, chunk_index, embedding)
+       VALUES ($1, $2, $3, $4::vector)`,
+      [params.document_id, params.content, params.chunk_index, embeddingStr]
     );
-    return result.rows[0].id;
   }
 
-  async insertChunk(chunk: Omit<Chunk, 'id' | 'created_at'>): Promise<string> {
-    const embeddingArray = chunk.embedding ? `[${chunk.embedding.join(',')}]` : null;
-    const result = await this.pool.query(
-      `INSERT INTO chunks (document_id, content, chunk_index, embedding) 
-       VALUES ($1, $2, $3, $4::vector) RETURNING id`,
-      [chunk.document_id, chunk.content, chunk.chunk_index, embeddingArray]
-    );
-    return result.rows[0].id;
-  }
+  async searchSimilarChunks(
+    queryEmbedding: number[],
+    limit = 5
+  ): Promise<SearchResult[]> {
+    if (queryEmbedding.length !== 768) {
+      throw new Error(`Query embedding dimension mismatch: ${queryEmbedding.length}`);
+    }
 
-  async searchSimilarChunks(queryEmbedding: number[], limit: number = 5): Promise<SearchResult[]> {
     const embeddingStr = `[${queryEmbedding.join(',')}]`;
+
     const result = await this.pool.query(
-      `SELECT 
-        c.id as chunk_id,
+      `
+      SELECT
+        c.id AS chunk_id,
         c.document_id,
         c.content,
-        1 - (c.embedding <=> $1::vector) as similarity
+        1 - (c.embedding <=> $1::vector) AS similarity
       FROM chunks c
-      WHERE c.embedding IS NOT NULL
       ORDER BY c.embedding <=> $1::vector
-      LIMIT $2`,
+      LIMIT $2
+      `,
       [embeddingStr, limit]
     );
+
     return result.rows;
-  }
-
-  async getDocuments(): Promise<Document[]> {
-    const result = await this.pool.query('SELECT * FROM documents ORDER BY uploaded_at DESC');
-    return result.rows;
-  }
-
-  async deleteDocument(id: string): Promise<void> {
-    await this.pool.query('DELETE FROM documents WHERE id = $1', [id]);
-  }
-
-  async close(): Promise<void> {
-    await this.pool.end();
   }
 }

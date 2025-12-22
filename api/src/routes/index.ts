@@ -1,27 +1,6 @@
 import { Router } from 'express';
-import multer from 'multer';
 import { ChatController } from '../controllers/chat.controller';
 import { UploadController } from '../controllers/upload.controller';
-
-const upload = multer({
-  dest: 'uploads/',
-  limits: { fileSize: 10 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => {
-    const allowedTypes = [
-      'application/pdf',
-      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      'text/plain',
-      'application/vnd.ms-excel',
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    ];
-
-    if (allowedTypes.includes(file.mimetype)) {
-      cb(null, true);
-    } else {
-      cb(new Error('File type not supported'));
-    }
-  },
-});
 
 export function createRoutes(
   chatController: ChatController,
@@ -29,7 +8,8 @@ export function createRoutes(
 ): Router {
   const router = Router();
 
-  router.get('/health', (req, res) => {
+  // Health check
+  router.get('/health', (_req, res) => {
     res.json({
       status: 'ok',
       message: 'Chatbot API running',
@@ -37,18 +17,19 @@ export function createRoutes(
     });
   });
 
-  router.post('/api/chat', (req, res) => chatController.chat(req, res));
-
-  router.post('/api/upload', upload.single('file'), (req, res) =>
-    uploadController.uploadDocument(req, res)
+  // Chat API
+  router.post('/api/chat', (req, res) =>
+    chatController.chat(req, res)
   );
 
-  router.get('/api/documents', (req, res) =>
-    uploadController.listDocuments(req, res)
+  // 🔥 INGEST từ MinIO → PostgreSQL (chạy 1 lần)
+  router.post('/api/ingest', (req, res) =>
+    uploadController.ingestFromMinIO(req, res)
   );
 
-  router.delete('/api/documents/:id', (req, res) =>
-    uploadController.deleteDocument(req, res)
+  // (Optional) list file trong MinIO để debug
+  router.get('/api/minio/files', (req, res) =>
+    uploadController.listMinIOFiles(req, res)
   );
 
   return router;

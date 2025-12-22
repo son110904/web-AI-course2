@@ -1,101 +1,49 @@
+// src/models/minio.model.ts
 import { Client } from 'minio';
-import * as fs from 'fs';
 
 export class MinIOModel {
   private client: Client;
-  private bucketName: string;
+  private bucket: string;
 
-  constructor(
-    endpoint: string,
-    port: number,
-    accessKey: string,
-    secretKey: string,
-    bucketName: string,
-    useSSL: boolean = false
-  ) {
-    console.log('Connecting to MinIO:', { endpoint, port, bucketName });
-    
+  constructor() {
     this.client = new Client({
-      endPoint: endpoint,
-      port: port,
-      useSSL: useSSL,
-      accessKey: accessKey,
-      secretKey: secretKey,
+      endPoint: process.env.MINIO_ENDPOINT!,
+      port: Number(process.env.MINIO_PORT),
+      useSSL: process.env.MINIO_USE_SSL === 'true',
+      accessKey: process.env.MINIO_ACCESS_KEY!,
+      secretKey: process.env.MINIO_SECRET_KEY!,
     });
-    this.bucketName = bucketName;
+
+    this.bucket = process.env.MINIO_BUCKET_NAME!;
+  }
+
+  async getFileBuffer(objectName: string): Promise<Buffer> {
+    const stream = await this.client.getObject(this.bucket, objectName);
+
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) {
+      chunks.push(chunk);
+    }
+    return Buffer.concat(chunks);
   }
 
   async initialize(): Promise<void> {
     try {
-      console.log('Testing MinIO connection...');
-      
-      const exists = await this.client.bucketExists(this.bucketName);
+      const exists = await this.client.bucketExists(this.bucket);
       if (!exists) {
-        console.log(`Creating bucket '${this.bucketName}'...`);
-        await this.client.makeBucket(this.bucketName, 'us-east-1');
-        console.log(`✓ Bucket '${this.bucketName}' created`);
-      } else {
-        console.log(`✓ Bucket '${this.bucketName}' exists`);
+        await this.client.makeBucket(this.bucket);
       }
-
-      const policy = {
-        Version: '2012-10-17',
-        Statement: [{
-          Effect: 'Allow',
-          Principal: { AWS: ['*'] },
-          Action: ['s3:GetObject'],
-          Resource: [`arn:aws:s3:::${this.bucketName}/*`],
-        }],
-      };
-      
-      await this.client.setBucketPolicy(this.bucketName, JSON.stringify(policy));
-      console.log('✓ Bucket policy set');
-      
-    } catch (error: any) {
-      console.error('✗ MinIO error:', error.message);
-      throw error;
+    } catch (err) {
+      // rethrow so caller can handle initialization errors
+      throw err;
     }
   }
 
-  async uploadFile(filePath: string, objectName: string, contentType: string): Promise<string> {
-    try {
-      const fileStream = fs.createReadStream(filePath);
-      const fileStats = fs.statSync(filePath);
-
-      await this.client.putObject(
-        this.bucketName,
-        objectName,
-        fileStream,
-        fileStats.size,
-        { 'Content-Type': contentType }
-      );
-
-      return `${this.bucketName}/${objectName}`;
-    } catch (error) {
-      console.error('✗ Upload error:', error);
-      throw error;
-    }
-  }
-
-  async downloadFile(objectName: string, destinationPath: string): Promise<void> {
-    await this.client.fGetObject(this.bucketName, objectName, destinationPath);
-  }
-
-  async getFileUrl(objectName: string, expirySeconds: number = 3600): Promise<string> {
-    return await this.client.presignedGetObject(this.bucketName, objectName, expirySeconds);
-  }
-
-  async deleteFile(objectName: string): Promise<void> {
-    await this.client.removeObject(this.bucketName, objectName);
-  }
-
-  async listFiles(prefix: string = ''): Promise<string[]> {
-    return new Promise((resolve, reject) => {
-      const files: string[] = [];
-      const stream = this.client.listObjects(this.bucketName, prefix, true);
-      stream.on('data', (obj) => files.push(obj.name));
-      stream.on('error', reject);
-      stream.on('end', () => resolve(files));
-    });
+  async uploadFile(filePath: string, objectName: string, contentType?: string): Promise<string> {
+    const metaData = contentType ? { 'Content-Type': contentType } : {};
+    // fPutObject(bucketName, objectName, filePath, metaData)
+    await this.client.fPutObject(this.bucket, objectName, filePath, metaData as any);
+    // return stored object identifier (controller will save this)
+    return objectName;
   }
 }

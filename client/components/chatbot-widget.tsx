@@ -47,7 +47,8 @@ export function ChatbotWidget() {
     setInputValue("")
 
     try {
-      const res = await fetch("/api", {
+      // Use Next.js proxy route at `/api` which forwards to BACKEND_API_URL
+      const res = await fetch('/api', {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

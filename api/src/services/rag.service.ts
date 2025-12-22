@@ -1,35 +1,26 @@
-import ollama from 'ollama';
+import { Ollama } from 'ollama';
 import { DatabaseModel, SearchResult, ChatMessage } from '../models/database.model';
 import { EmbeddingService } from './embedding.service';
 
 export class RAGService {
-  private db: DatabaseModel;
-  private embeddingService: EmbeddingService;
-  private ollamaModel: string;
-  private ollamaHost: string;
+  private ollama: Ollama;
 
   constructor(
-    db: DatabaseModel,
-    embeddingService: EmbeddingService,
+    private db: DatabaseModel,
+    private embeddingService: EmbeddingService,
     ollamaHost: string,
-    ollamaModel: string
+    private ollamaModel: string
   ) {
-    this.db = db;
-    this.embeddingService = embeddingService;
-    this.ollamaHost = ollamaHost;
-    this.ollamaModel = ollamaModel;
+    this.ollama = new Ollama({ host: ollamaHost });
   }
 
   async chat(messages: ChatMessage[]): Promise<string> {
     const userMessage = messages[messages.length - 1];
-    if (!userMessage || userMessage.role !== 'user') {
-      throw new Error('Invalid message format');
-    }
-
     const query = userMessage.content;
+
     const queryEmbedding = await this.embeddingService.generateEmbedding(query);
-    const similarChunks = await this.db.searchSimilarChunks(queryEmbedding, 5);
-    const context = this.buildContext(similarChunks);
+    const chunks = await this.db.searchSimilarChunks(queryEmbedding, 5);
+    const context = this.buildContext(chunks);
 
     return this.generateResponse(query, context, messages);
   }
@@ -39,8 +30,8 @@ export class RAGService {
 
     return chunks
       .map(
-        (chunk, index) =>
-          `[Tài liệu ${index + 1}]\n${chunk.content}\n(Độ liên quan: ${(chunk.similarity * 100).toFixed(1)}%)`
+        (c, i) =>
+          `[Tài liệu ${i + 1}]\n${c.content}\n(Độ liên quan: ${(c.similarity * 100).toFixed(1)}%)`
       )
       .join('\n\n');
   }
@@ -48,40 +39,29 @@ export class RAGService {
   private async generateResponse(
     query: string,
     context: string,
-    conversationHistory: ChatMessage[]
+    history: ChatMessage[]
   ): Promise<string> {
-    const systemPrompt = `Bạn là trợ lý AI thông minh của Đại học Kinh tế Quốc dân.
-Nhiệm vụ: Trả lời câu hỏi dựa trên thông tin được cung cấp.
-
-QUY TẮC:
-- Chỉ sử dụng thông tin từ tài liệu được cung cấp
-- Nếu không tìm thấy thông tin, hãy nói rõ
-- Trả lời bằng tiếng Việt
-- Không bịa đặt thông tin`;
+    const systemPrompt = `
+Bạn là trợ lý AI của Đại học Kinh tế Quốc dân.
+Chỉ trả lời dựa trên tài liệu được cung cấp.
+Nếu không có thông tin, hãy nói rõ.
+`.trim();
 
     const userPrompt =
       context.trim().length === 0
-        ? `Câu hỏi: ${query}
+        ? `Câu hỏi: ${query}\n\nKhông tìm thấy thông tin trong tài liệu.`
+        : `Tài liệu:\n${context}\n\nCâu hỏi: ${query}`;
 
-Không tìm thấy thông tin trong cơ sở dữ liệu.`
-        : `Dựa trên tài liệu:
-
-${context}
-
----
-
-Câu hỏi: ${query}`;
-
-    const response = await ollama.chat({
+    const res = await this.ollama.chat({
       model: this.ollamaModel,
-      host: this.ollamaHost,
       messages: [
         { role: 'system', content: systemPrompt },
-        ...conversationHistory.slice(-4, -1),
+        ...history.slice(-4, -1),
         { role: 'user', content: userPrompt },
       ],
+      stream: false,
     });
 
-    return response.message.content;
+    return res.message.content;
   }
 }
