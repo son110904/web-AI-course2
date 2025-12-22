@@ -21,22 +21,41 @@ export class UploadController {
         return res.status(400).json({ error: 'Thiếu objectName' });
       }
 
-      // 1. Lấy file từ MinIO
+      //  Lấy file từ MinIO
       const buffer = await this.minio.getFile(objectName);
-      
-      // 2. Extract text từ buffer
-      const text = await this.documentService.extractText(buffer, objectName);
 
-      // 3. Chunk text
+      // Extract text
+      const text = (await this.documentService.extractText(buffer)).trim();
+      if (!text) {
+        return res.status(400).json({ error: 'File không có nội dung text' });
+      }
+
+      // Insert document → lấy document_id (UUID)
+      const documentId = await this.db.insertDocument({
+        filename: objectName,
+        file_path: objectName,
+        file_size: buffer.length,
+        content_type: 'unknown',
+      });
+
+      // Chunk text
       const chunks = this.chunkText(text);
 
-      // 4. Embed + lưu DB
+      // Embed + insert chunks
       for (let i = 0; i < chunks.length; i++) {
-        const chunk = chunks[i];
-        const embedding = await this.embeddingService.generateEmbedding(chunk);
+        const chunkText = chunks[i].trim();
+        if (!chunkText) continue;
+
+        const embedding = await this.embeddingService.generateEmbedding(chunkText);
+
+        // debug cực kỳ hữu ích
+        if (embedding.length !== 384) {
+          throw new Error(`Embedding dimension invalid: ${embedding.length}`);
+        }
+
         await this.db.insertChunk({
-          document_id: objectName,
-          content: chunk,
+          document_id: documentId, // UUID thật
+          content: chunkText,
           chunk_index: i,
           embedding,
         });
@@ -44,6 +63,7 @@ export class UploadController {
 
       return res.json({
         message: 'Ingest thành công',
+        documentId,
         totalChunks: chunks.length,
       });
     } catch (error: any) {
@@ -52,7 +72,7 @@ export class UploadController {
     }
   }
 
-  // 👉 List files trong MinIO (để debug)
+  // 👉 List files trong MinIO
   async listMinIOFiles(req: Request, res: Response) {
     try {
       const files = await this.minio.listFiles();
@@ -66,16 +86,13 @@ export class UploadController {
     }
   }
 
-  private chunkText(
-    text: string,
-    chunkSize = 300,
-    overlap = 50
-  ): string[] {
+  private chunkText(text: string, chunkSize = 300, overlap = 50): string[] {
     const chunks: string[] = [];
     let start = 0;
 
     while (start < text.length) {
-      chunks.push(text.slice(start, start + chunkSize));
+      const chunk = text.slice(start, start + chunkSize);
+      if (chunk.trim()) chunks.push(chunk);
       start += chunkSize - overlap;
     }
 

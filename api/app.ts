@@ -9,7 +9,7 @@ import { RAGService } from './src/services/rag.service';
 import { ChatController } from './src/controllers/chat.controller';
 import { UploadController } from './src/controllers/upload.controller';
 import { createRoutes } from './src/routes';
-
+import { IngestController } from './src/controllers/ingest.controller';
 
 dotenv.config();
 
@@ -33,15 +33,7 @@ export async function createApp(): Promise<Express> {
   const db = new DatabaseModel(process.env.DATABASE_URL!);
   await db.initialize();
 
-  const minio = new MinIOModel(
-    process.env.MINIO_ENDPOINT!,
-    parseInt(process.env.MINIO_PORT || '8008'),
-    process.env.MINIO_ACCESS_KEY!,
-    process.env.MINIO_SECRET_KEY!,
-    process.env.MINIO_BUCKET_NAME!,
-    false
-  );
-  await minio.initialize();
+  const minio = new MinIOModel();
 
   const embeddingService = new EmbeddingService(
     process.env.EMBEDDING_MODEL || 'Xenova/all-MiniLM-L6-v2'
@@ -64,8 +56,14 @@ export async function createApp(): Promise<Express> {
     documentService,
     embeddingService
   );
+  const ingestController = new IngestController(
+  minio,
+  documentService,
+  embeddingService,
+  db
+);
 
-  const routes = createRoutes(chatController, uploadController);
+  const routes = createRoutes(chatController, ingestController);
   app.use('/', routes);
 
   app.use((err: Error, req: Request, res: Response, next: NextFunction) => {

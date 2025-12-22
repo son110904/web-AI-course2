@@ -1,5 +1,4 @@
-import fs from 'fs';
-import path from 'path';
+
 const pdfParse: any = require('pdf-parse');
 import mammoth from 'mammoth';
 import * as XLSX from 'xlsx';
@@ -7,42 +6,56 @@ import * as XLSX from 'xlsx';
 export class DocumentService {
   constructor() {}
 
-  async extractText(filePath: string, contentType?: string): Promise<string> {
-    const buffer = await fs.promises.readFile(filePath);
-    const extension = path.extname(filePath).toLowerCase();
+  // MAIN: extract text from Buffer
+  async extractText(buffer: Buffer, filename: string): Promise<string> {
+    const ext = filename.split('.').pop()?.toLowerCase();
 
-    // prefer extension, fallback to contentType checks
-    switch (extension) {
-      case '.pdf':
-        return (await pdfParse(buffer)).text;
+    switch (ext) {
+      case 'pdf':
+        return this.extractPdf(buffer);
 
-      case '.docx':
-        return (await mammoth.extractRawText({ buffer })).value;
+      case 'docx':
+        return this.extractDocx(buffer);
 
-      case '.txt':
+      case 'txt':
         return buffer.toString('utf-8');
 
-      case '.xlsx':
-      case '.xls': {
-        const workbook = XLSX.read(buffer, { type: 'buffer' });
-        return workbook.SheetNames
-          .map((name) => XLSX.utils.sheet_to_csv(workbook.Sheets[name]))
-          .join('\n');
-      }
+      case 'xlsx':
+      case 'xls':
+        return this.extractExcel(buffer);
 
       default:
-        // try content type
-        if (contentType?.includes('pdf')) return (await pdfParse(buffer)).text;
-        if (contentType?.includes('word')) return (await mammoth.extractRawText({ buffer })).value;
-        if (contentType?.includes('text')) return buffer.toString('utf-8');
-
-        throw new Error(`Unsupported file type: ${extension || contentType}`);
+        throw new Error(`Unsupported file type: ${ext}`);
     }
   }
 
+  // =========================
+  // HELPERS
+  // =========================
+  private async extractPdf(buffer: Buffer): Promise<string> {
+    const data = await pdfParse(buffer);
+    return data.text;
+  }
+
+  private async extractDocx(buffer: Buffer): Promise<string> {
+    const result = await mammoth.extractRawText({ buffer });
+    return result.value;
+  }
+
+  private extractExcel(buffer: Buffer): string {
+    const workbook = XLSX.read(buffer, { type: 'buffer' });
+    return workbook.SheetNames
+      .map((name) =>
+        XLSX.utils.sheet_to_csv(workbook.Sheets[name])
+      )
+      .join('\n');
+  }
+
+  // =========================
+  // CLEAN + CHUNK
+  // =========================
   cleanText(text: string): string {
     if (!text) return '';
-    // normalize whitespace and remove excessive newlines
     return text
       .replace(/\r\n/g, '\n')
       .replace(/\n{2,}/g, '\n')
@@ -50,27 +63,23 @@ export class DocumentService {
       .trim();
   }
 
-  chunkText(text: string, chunkSize = 500, overlap = 50): string[] {
-    if (!text) return [];
+  chunkText(text: string, chunkSize = 300, overlap = 50): string[] {
     const chunks: string[] = [];
     let start = 0;
-    const len = text.length;
 
-    while (start < len) {
-      const end = Math.min(start + chunkSize, len);
-      let chunk = text.slice(start, end).trim();
-
-      // try to expand to nearest sentence end for better context
-      if (end < len) {
-        const remaining = text.slice(end, Math.min(end + 100, len));
-        const dotIdx = remaining.indexOf('.');
-        if (dotIdx !== -1) chunk += remaining.slice(0, dotIdx + 1);
-      }
-
-      chunks.push(chunk);
+    while (start < text.length) {
+      const end = Math.min(start + chunkSize, text.length);
+      chunks.push(text.slice(start, end));
       start += chunkSize - overlap;
     }
 
-    return chunks.filter((c) => c.length > 0);
+    return chunks.filter(Boolean);
+  }
+
+  // alias để KHỚP với controller
+  splitText(text: string, chunkSize = 300, overlap = 50): string[] {
+    return this.chunkText(text, chunkSize, overlap);
   }
 }
+
+

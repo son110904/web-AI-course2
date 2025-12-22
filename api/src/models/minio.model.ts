@@ -1,4 +1,3 @@
-// src/models/minio.model.ts
 import { Client } from 'minio';
 
 export class MinIOModel {
@@ -9,7 +8,7 @@ export class MinIOModel {
     this.client = new Client({
       endPoint: process.env.MINIO_ENDPOINT!,
       port: Number(process.env.MINIO_PORT),
-      useSSL: process.env.MINIO_USE_SSL === 'true',
+      useSSL: false,
       accessKey: process.env.MINIO_ACCESS_KEY!,
       secretKey: process.env.MINIO_SECRET_KEY!,
     });
@@ -17,33 +16,30 @@ export class MinIOModel {
     this.bucket = process.env.MINIO_BUCKET_NAME!;
   }
 
-  async getFileBuffer(objectName: string): Promise<Buffer> {
+  async listFiles(prefix: string): Promise<string[]> {
+    const objects: string[] = [];
+
+    return new Promise((resolve, reject) => {
+      const stream = this.client.listObjectsV2(this.bucket, prefix, true);
+
+      stream.on('data', (obj) => {
+        if (obj.name) objects.push(obj.name);
+      });
+
+      stream.on('end', () => resolve(objects));
+      stream.on('error', reject);
+    });
+  }
+
+  async getFile(objectName: string): Promise<Buffer> {
     const stream = await this.client.getObject(this.bucket, objectName);
 
-    const chunks: Buffer[] = [];
-    for await (const chunk of stream) {
-      chunks.push(chunk);
-    }
-    return Buffer.concat(chunks);
-  }
+    return new Promise((resolve, reject) => {
+      const chunks: Buffer[] = [];
 
-  async initialize(): Promise<void> {
-    try {
-      const exists = await this.client.bucketExists(this.bucket);
-      if (!exists) {
-        await this.client.makeBucket(this.bucket);
-      }
-    } catch (err) {
-      // rethrow so caller can handle initialization errors
-      throw err;
-    }
-  }
-
-  async uploadFile(filePath: string, objectName: string, contentType?: string): Promise<string> {
-    const metaData = contentType ? { 'Content-Type': contentType } : {};
-    // fPutObject(bucketName, objectName, filePath, metaData)
-    await this.client.fPutObject(this.bucket, objectName, filePath, metaData as any);
-    // return stored object identifier (controller will save this)
-    return objectName;
+      stream.on('data', (chunk) => chunks.push(chunk));
+      stream.on('end', () => resolve(Buffer.concat(chunks)));
+      stream.on('error', reject);
+    });
   }
 }

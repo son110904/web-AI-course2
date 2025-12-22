@@ -59,6 +59,29 @@ export class DatabaseModel {
       client.release();
     }
   }
+  async insertDocument(params: {
+  filename: string;
+  file_path: string;
+  file_size: number;
+  content_type: string;
+}): Promise<string> {
+  const result = await this.pool.query(
+    `
+    INSERT INTO documents (filename, file_path, file_size, content_type)
+    VALUES ($1, $2, $3, $4)
+    RETURNING id
+    `,
+    [
+      params.filename,
+      params.file_path,
+      params.file_size,
+      params.content_type,
+    ]
+  );
+
+  return result.rows[0].id;
+}
+
 
   async insertChunk(params: {
     document_id: string;
