@@ -25,7 +25,7 @@ export class UploadController {
       const buffer = await this.minio.getFile(objectName);
 
       // Extract text
-      const text = (await this.documentService.extractText(buffer)).trim();
+      const text = (await this.documentService.extractText(buffer, objectName)).trim();
       if (!text) {
         return res.status(400).json({ error: 'File không có nội dung text' });
       }
@@ -48,7 +48,7 @@ export class UploadController {
 
         const embedding = await this.embeddingService.generateEmbedding(chunkText);
 
-        // debug cực kỳ hữu ích
+        
         if (embedding.length !== 384) {
           throw new Error(`Embedding dimension invalid: ${embedding.length}`);
         }
@@ -72,7 +72,7 @@ export class UploadController {
     }
   }
 
-  // 👉 List files trong MinIO
+  // List files trong MinIO
   async listMinIOFiles(req: Request, res: Response) {
     try {
       const files = await this.minio.listFiles();

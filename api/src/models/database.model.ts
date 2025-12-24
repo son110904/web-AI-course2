@@ -128,4 +128,30 @@ export class DatabaseModel {
 
     return result.rows;
   }
+  async getIngestStats() {
+  const totalChunksResult = await this.pool.query(
+    'SELECT COUNT(*) as count FROM chunks'
+  );
+  
+  const totalDocsResult = await this.pool.query(
+    'SELECT COUNT(DISTINCT document_id) as count FROM chunks'
+  );
+  
+  const documentsResult = await this.pool.query(`
+    SELECT 
+      document_id,
+      COUNT(*) as num_chunks,
+      MIN(chunk_index) as min_index,
+      MAX(chunk_index) as max_index
+    FROM chunks
+    GROUP BY document_id
+    ORDER BY document_id
+  `);
+  
+  return {
+    totalDocuments: parseInt(totalDocsResult.rows[0]?.count || '0'),
+    totalChunks: parseInt(totalChunksResult.rows[0]?.count || '0'),
+    documents: documentsResult.rows
+  };
+}
 }

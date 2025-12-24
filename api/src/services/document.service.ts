@@ -1,4 +1,3 @@
-
 const pdfParse: any = require('pdf-parse');
 import mammoth from 'mammoth';
 import * as XLSX from 'xlsx';

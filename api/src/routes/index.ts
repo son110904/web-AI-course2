@@ -7,19 +7,25 @@ export function createRoutes(
   ingestController: IngestController
 ): Router {
   const router = Router();
-
+  
   router.get('/health', (_, res) => {
     res.json({ status: 'ok' });
   });
-
+  
   router.post('/api/chat', (req, res) =>
     chatController.chat(req, res)
   );
-
-  // INGEST ALL DOCUMENTS
+  
   router.post('/api/ingest', (req, res) =>
     ingestController.ingestAll(req, res)
   );
-
+ 
+  router.get('/api/ingest/status', (req, res) =>
+    ingestController.checkIngestStatus(req, res)
+  );
+  
+  router.delete('/api/ingest/clear', (req, res) =>
+    ingestController.clearAll(req, res)
+);
   return router;
 }
