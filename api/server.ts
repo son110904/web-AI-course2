@@ -19,12 +19,12 @@ async function startServer() {
     });
 
     process.on('SIGTERM', () => {
-      console.log('\n⏳ Shutting down...');
+      console.log('\n Shutting down...');
       process.exit(0);
     });
 
     process.on('SIGINT', () => {
-      console.log('\n⏳ Shutting down...');
+      console.log('\n Shutting down...');
       process.exit(0);
     });
   } catch (error) {

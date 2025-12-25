@@ -7,7 +7,7 @@ services:
     environment:
       POSTGRES_USER: raguser
       POSTGRES_PASSWORD: ragpass123
-      POSTGRES_DB: ragdb
+      POSTGRES_DB: raguser
     ports:
       - "5432:5432"
     volumes:
@@ -30,7 +30,7 @@ services:
       - |
         ollama serve &
         sleep 10
-        ollama pull llama3.2:3b
+        ollama pull qwen2.5:1.5b-instruct-q4_K_M
         wait
 
 volumes:

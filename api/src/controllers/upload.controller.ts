@@ -12,7 +12,7 @@ export class UploadController {
     private embeddingService: EmbeddingService
   ) {}
 
-  // 👉 INGEST từ MinIO → PostgreSQL
+  // INGEST từ MinIO → PostgreSQL
   async ingestFromMinIO(req: Request, res: Response) {
     try {
       const { objectName } = req.body;
