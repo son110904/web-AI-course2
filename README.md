@@ -48,9 +48,6 @@ npm install
 Start infrastructure (Hãy tải phần mềm docker desktop, bật lên rồi chạy lệnh dưới)
 ```bash
 docker-compose up -d
-
-# Xem logs Ollama (đợi model download xong)
-docker-compose logs -f ollama
 ```
 Start API (Hệ thống tự động ingest dữ liệu từ MinIO, sau đó tiến hành embedding)
 ```bash
