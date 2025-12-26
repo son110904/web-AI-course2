@@ -11,7 +11,7 @@ git clone https://github.com/son110904/web-AI-course2.git
 cd web-AI-course2
 ```
 
-### 2. Cài đặt dependencies
+### 2. Cài đặt dependencies và thiết lập client
 
 Sử dụng npm:
 ```bash
@@ -45,9 +45,9 @@ Sử dụng npm:
 npm install
 ```
 
-Start infrastructure
+Start infrastructure (Hãy tải phần mềm docker desktop, bật lên rồi chạy lệnh dưới)
 ```bash
-docker-compose up -d
+docker-compose up -d 
 
 # Xem logs Ollama (đợi model download xong)
 docker-compose logs -f ollama
