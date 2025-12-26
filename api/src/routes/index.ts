@@ -1,10 +1,12 @@
 import { Router } from 'express';
 import { ChatController } from '../controllers/chat.controller';
 import { IngestController } from '../controllers/ingest.controller';
+import { UploadController } from '../controllers/upload.controller';
 
 export function createRoutes(
   chatController: ChatController,
-  ingestController: IngestController
+  ingestController: IngestController,
+  uploadController: UploadController
 ): Router {
   const router = Router();
   
@@ -26,6 +28,9 @@ export function createRoutes(
   
   router.delete('/api/ingest/clear', (req, res) =>
     ingestController.clearAll(req, res)
-);
+  );
+  router.get('/api/upload/status', (req, res) =>
+    uploadController.checkUploadStatus(req, res)
+  );
   return router;
 }

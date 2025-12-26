@@ -98,4 +98,61 @@ export class UploadController {
 
     return chunks;
   }
+  // 📊 Kiểm tra trạng thái upload
+async checkUploadStatus(req: Request, res: Response) {
+  try {
+    // Đếm tổng documents và chunks
+    const statsQuery = await this.db['pool'].query(`
+      SELECT 
+        COUNT(DISTINCT d.id) as total_documents,
+        COUNT(c.id) as total_chunks,
+        SUM(d.file_size) as total_size
+      FROM documents d
+      LEFT JOIN chunks c ON c.document_id = d.id
+    `);
+
+    // Lấy danh sách documents với thông tin chi tiết
+    const documentsQuery = await this.db['pool'].query(`
+      SELECT 
+        d.id,
+        d.filename,
+        d.file_path,
+        d.file_size,
+        d.content_type,
+        d.uploaded_at,
+        COUNT(c.id) as chunk_count,
+        CASE 
+          WHEN COUNT(c.id) > 0 THEN true 
+          ELSE false 
+        END as has_embeddings
+      FROM documents d
+      LEFT JOIN chunks c ON c.document_id = d.id
+      GROUP BY d.id
+      ORDER BY d.uploaded_at DESC
+    `);
+
+    // Kiểm tra embedding dimension
+    const embeddingCheck = await this.db['pool'].query(`
+      SELECT 
+        document_id,
+        chunk_index,
+        array_length(embedding, 1) as embedding_dim
+      FROM chunks
+      LIMIT 5
+    `);
+
+    return res.json({
+      summary: {
+        totalDocuments: parseInt(statsQuery.rows[0]?.total_documents || '0'),
+        totalChunks: parseInt(statsQuery.rows[0]?.total_chunks || '0'),
+        totalSize: parseInt(statsQuery.rows[0]?.total_size || '0'),
+      },
+      documents: documentsQuery.rows,
+      embeddingSample: embeddingCheck.rows,
+    });
+  } catch (error: any) {
+    console.error('Check status failed:', error);
+    res.status(500).json({ error: error.message });
+  }
+}
 }

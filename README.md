@@ -39,7 +39,7 @@ yarn dev
 
 Ứng dụng sẽ chạy tại [http://localhost:3000](http://localhost:3000) (hoặc cổng được cấu hình trong dự án)
 
-### 3. Thiết lập API
+### 3. Thiết lập API 
 Sử dụng npm:
 ```bash
 npm install
@@ -47,12 +47,16 @@ npm install
 
 Start infrastructure (Hãy tải phần mềm docker desktop, bật lên rồi chạy lệnh dưới)
 ```bash
+<<<<<<< HEAD
 docker-compose up -d 
 
 # Xem logs Ollama (đợi model download xong)
 docker-compose logs -f ollama
+=======
+docker-compose up -d
+>>>>>>> 33edc9be6668c5462394d929a1691390644fa75e
 ```
-Start API
+Start API (Hệ thống tự động ingest dữ liệu từ MinIO, sau đó tiến hành embedding)
 ```bash
 npm run dev
 ```
