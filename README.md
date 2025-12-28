@@ -12,6 +12,9 @@ cd web-AI-course2
 ```
 
 ### 2. Cài đặt dependencies và thiết lập client
+```bash
+cd client
+```
 
 Sử dụng npm:
 ```bash
@@ -31,17 +34,13 @@ yarn install
 npm run dev
 ```
 
-hoặc
-
-```bash
-yarn dev
-```
-
 Ứng dụng sẽ chạy tại [http://localhost:3000](http://localhost:3000) (hoặc cổng được cấu hình trong dự án)
 
 ### 3. Thiết lập API 
 Sử dụng npm:
+
 ```bash
+cd api
 npm install
 ```
 
