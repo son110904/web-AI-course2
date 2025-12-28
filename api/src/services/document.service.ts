@@ -62,7 +62,7 @@ export class DocumentService {
       .trim();
   }
 
-  chunkText(text: string, chunkSize = 300, overlap = 50): string[] {
+  chunkText(text: string, chunkSize = 500, overlap = 100): string[] {
     const chunks: string[] = [];
     let start = 0;
 
