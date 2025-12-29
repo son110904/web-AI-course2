@@ -135,7 +135,7 @@ export class IngestController {
     }
   }
 
-  // 📊 Kiểm tra trạng thái ingest
+  // Kiểm tra trạng thái ingest
   async checkIngestStatus(req: Request, res: Response) {
     try {
       const stats = await this.db.getIngestStats();
@@ -151,7 +151,7 @@ export class IngestController {
       res.status(500).json({ error: error.message });
     }
   }
-  // 🗑️ XÓA TOÀN BỘ DỮ LIỆU INGEST
+  // XÓA TOÀN BỘ DỮ LIỆU INGEST
 async clearAll(req: Request, res: Response) {
   try {
     const chunksResult = await this.db['pool'].query(
@@ -162,8 +162,8 @@ async clearAll(req: Request, res: Response) {
       'DELETE FROM documents RETURNING id'
     );
     
-    console.log(`🗑️ Deleted ${chunksResult.rowCount} chunks`);
-    console.log(`🗑️ Deleted ${docsResult.rowCount} documents`);
+    console.log(`Deleted ${chunksResult.rowCount} chunks`);
+    console.log(`Deleted ${docsResult.rowCount} documents`);
     
     res.json({
       message: 'Đã xóa toàn bộ dữ liệu ingest',
