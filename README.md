@@ -1,6 +1,6 @@
 # Web AI Course 2
 
-Dự án web application sử dụng React cho khóa học AI.
+Dự án web application sử dụng React cho trang web Course.
 
 ## Cài đặt
 
