@@ -14,9 +14,9 @@ export class RAGService {
     this.ollama = new Ollama({ host: ollamaHost });
   }
 
-  async chat(messages: ChatMessage[]): Promise<string> {
+  async chat(messages: ChatMessage[]): Promise<string> { //hàm chat
     try {
-      const userMessage = messages[messages.length - 1];
+      const userMessage = messages[messages.length - 1]; //lấy câu hỏi từ người dùng, message mới nhất
       const query = userMessage.content;
 
       console.log(`\n🔍 User query: "${query}"`);
@@ -139,7 +139,7 @@ Yêu cầu:
       stream: false,
       options: {
         temperature: 0.1,        
-        top_p: 0.9,              // Nucleus sampling
+        top_p: 0.9,              // giữ lại các từ sao cho tổng xác suất tích lũy đạt 90%
         top_k: 20,               // Giới hạn vocabulary
         repeat_penalty: 1.2,     // Tránh lặp lại
         num_predict: 600,        // Giới hạn độ dài response

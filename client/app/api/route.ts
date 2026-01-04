@@ -1,19 +1,19 @@
-// client/app/api/route.ts
+// client/app/api/route.ts API gateway đóng vai trò trung gian giữa frontend và backend
 import { NextRequest, NextResponse } from "next/server";
 
 const BACKEND_URL = process.env.BACKEND_API_URL;
 
-export async function POST(req: NextRequest) {
+export async function POST(req: NextRequest) { //Hàm này chạy khi frontend gọi: POST /api
   try {
-    console.log('[Next API] POST /api proxy called');
+    console.log('[Next API] POST /api proxy called'); //Giúp biết request có vào API gateway không
 
     if (!BACKEND_URL) {
       throw new Error("BACKEND_API_URL chưa được cấu hình");
     }
 
-    const body = await req.json();
+    const body = await req.json(); //lấy body, là những gì người dùng nhập vào ở frontend, là json
 
-    const res = await fetch(`${BACKEND_URL}/api/chat`, {
+    const res = await fetch(`${BACKEND_URL}/api/chat`, { //gửi request sang backend
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -23,7 +23,7 @@ export async function POST(req: NextRequest) {
 
     const text = await res.text(); // read text first
 
-    if (!res.headers.get("content-type")?.includes("application/json")) {
+    if (!res.headers.get("content-type")?.includes("application/json")) { //kiểm tra backend có trả về json không
       console.error("Backend returned non-JSON:", text.slice(0, 300));
       return NextResponse.json(
         { botMessage: "Backend lỗi hoặc không trả JSON", detail: text.slice(0, 200) },
