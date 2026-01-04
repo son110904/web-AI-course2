@@ -58,7 +58,7 @@ export class DocumentService {
       .trim();
   }
 
-  chunkText(text: string, chunkSize = 500, overlap = 100): string[] {
+  chunkText(text: string, chunkSize = 300, overlap = 50): string[] {
     const chunks: string[] = [];
     let start = 0;
 
@@ -69,11 +69,6 @@ export class DocumentService {
     }
 
     return chunks.filter(Boolean);
-  }
-
-  // alias để KHỚP với controller
-  splitText(text: string, chunkSize = 300, overlap = 50): string[] {
-    return this.chunkText(text, chunkSize, overlap);
   }
 }
 
