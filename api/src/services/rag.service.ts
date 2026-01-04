@@ -93,7 +93,6 @@ export class RAGService {
 
     // System prompt được tối ưu để giảm hallucination
     const systemPrompt = `Bạn là trợ lý AI của Đại học Kinh tế Quốc dân, chuyên tư vấn về chương trình đào tạo, quy chế học vụ và đề cương môn học.
-
 NGUYÊN TẮC:
 1. CHỈ trả lời dựa trên thông tin trong [TÀI LIỆU THAM KHẢO] bên dưới
 2. TUYỆT ĐỐI KHÔNG bịa đặt, suy đoán hoặc thêm thông tin không có trong tài liệu
@@ -179,7 +178,6 @@ Yêu cầu:
         lowerQuery.includes('hi') ||
         lowerQuery.includes('chào')) {
       return `Câu hỏi: ${query}
-
 Đây là lời chào. Hãy chào lại và giới thiệu bản thân là trợ lý AI của Đại học Kinh tế Quốc dân, có thể giúp về:
 - Chương trình đào tạo
 - Quy chế học vụ

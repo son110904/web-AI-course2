@@ -10,6 +10,7 @@ import { ChatController } from './src/controllers/chat.controller';
 import { UploadController } from './src/controllers/upload.controller';
 import { createRoutes } from './src/routes';
 import { IngestController } from './src/controllers/ingest.controller';
+import { MinIOWatcherService } from './src/services/minio-watcher.service';
 
 dotenv.config();
 
@@ -67,6 +68,7 @@ export async function createApp(): Promise<Express> {
     embeddingService,
     db
   );
+  
 
   console.log('✓ All services initialized');
 
@@ -98,7 +100,19 @@ export async function createApp(): Promise<Express> {
       console.log('ℹ️  You can manually ingest using: POST /api/ingest');
     }
   } else {
-    console.log('⏭️  Auto-ingest disabled (set AUTO_INGEST_ON_START=true to enable)');
+    console.log(' Auto-ingest disabled (set AUTO_INGEST_ON_START=true to enable)');
+  }
+  //Auto watch 
+  const watcherEnabled = process.env.MINIO_WATCHER_ENABLED !== 'false'; // Default: true
+  
+  if (watcherEnabled) {
+    const watcher = new MinIOWatcherService(
+      minio,
+      documentService,
+      embeddingService,
+      db
+    );
+    await watcher.start();
   }
 
   // Setup routes

@@ -14,7 +14,6 @@ async function startServer() {
       console.log(`✓ Environment: ${process.env.NODE_ENV || 'development'}`);
       console.log(`✓ Health: http://localhost:${PORT}/health`);
       console.log(`✓ Chat: http://localhost:${PORT}/api/chat`);
-      console.log(`✓ Upload: http://localhost:${PORT}/api/upload`);
       console.log('\n🎉 Ready!\n');
     });
 
