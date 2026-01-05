@@ -40,7 +40,7 @@ export class UploadController {
       });
 
       //  Chunk text
-      const chunks = this.documentService.splitText(text);
+      const chunks = this.documentService.chunkText(text);
 
       // Embed + insert chunks
       for (let i = 0; i < chunks.length; i++) {
@@ -75,7 +75,8 @@ export class UploadController {
   // List files trong MinIO
   async listMinIOFiles(req: Request, res: Response) {
     try {
-      const files = await this.minio.listFiles();
+      const prefix = (req.query.prefix as string) || '';
+      const files = await this.minio.listFiles(prefix);
       return res.json({
         files,
         total: files.length,
