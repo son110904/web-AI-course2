@@ -21,58 +21,72 @@ export class RAGService {
 
       console.log(`\n🔍 User query: "${query}"`);
 
-      // ✅ 1. PHÁT HIỆN GREETING
+      // 1. Greeting detection
       if (this.isGreeting(query)) {
         console.log('👋 Detected greeting');
         return this.getGreetingResponse();
       }
 
-      // 2. Generate embedding
-      const queryEmbedding = await this.embeddingService.generateEmbedding(query);
-      console.log(`✓ Generated query embedding`);
+      // 2. Query expansion - Mở rộng query để tìm tốt hơn
+      const expandedQueries = this.expandQuery(query);
+      console.log(`✓ Expanded to ${expandedQueries.length} queries`);
 
-      // 3. Search similar chunks
-      const topK = 5;
-      const chunks = await this.db.searchSimilarChunks(queryEmbedding, topK);
-      console.log(`✓ Found ${chunks.length} relevant chunks`);
+      // 3. Search với multiple queries
+      let allChunks: SearchResult[] = [];
+      for (const q of expandedQueries) {
+        const embedding = await this.embeddingService.generateEmbedding(q);
+        const chunks = await this.db.searchSimilarChunks(embedding, 8);
+        allChunks.push(...chunks);
+      }
 
-      // Log similarity scores
-      chunks.forEach((c, i) => {
-        console.log(`  [${i + 1}] Similarity: ${(c.similarity * 100).toFixed(1)}%`);
+      // 4. Deduplicate và sort
+      const uniqueChunks = this.deduplicateAndSort(allChunks);
+      console.log(`✓ Found ${uniqueChunks.length} unique chunks`);
+
+      // Log top results
+      uniqueChunks.slice(0, 5).forEach((c, i) => {
+        console.log(`  [${i + 1}] Similarity: ${(c.similarity * 100).toFixed(1)}% | ${c.content.substring(0, 80)}...`);
       });
 
-      // ✅ 4. KIỂM TRA QUALITY NGHIÊM NGẶT
-      const topSimilarity = chunks.length > 0 ? chunks[0].similarity : 0;
-      const avgSimilarity = chunks.length > 0 
-        ? chunks.reduce((sum, c) => sum + c.similarity, 0) / chunks.length 
-        : 0;
+      // 5. NGƯỠNG ĐỘNG - Adjust based on query type
+      const thresholds = this.getAdaptiveThresholds(query, uniqueChunks);
+      const topSimilarity = uniqueChunks.length > 0 ? uniqueChunks[0].similarity : 0;
 
       console.log(`✓ Top similarity: ${(topSimilarity * 100).toFixed(1)}%`);
-      console.log(`✓ Avg similarity: ${(avgSimilarity * 100).toFixed(1)}%`);
+      console.log(`✓ Threshold: ${(thresholds.minTop * 100).toFixed(1)}%`);
 
-      // ✅ NGƯỠNG CHẤT LƯỢNG
-      const MIN_TOP_SIMILARITY = 0.55;
-      const MIN_AVG_SIMILARITY = 0.45;
-      
-      if (topSimilarity < MIN_TOP_SIMILARITY || avgSimilarity < MIN_AVG_SIMILARITY) {
-        console.log('⚠️ Similarity too low');
+      // 6. Check quality với ngưỡng động
+      if (topSimilarity < thresholds.minTop) {
+        console.log('⚠️ Similarity too low - no reliable context found');
         return this.getNoContextResponse(query);
       }
 
-      // 5. Build context
-      const context = this.buildContext(chunks);
+      // 7. Lấy chunks đủ tốt
+      const goodChunks = uniqueChunks.filter(c => 
+        c.similarity >= thresholds.minChunk
+      ).slice(0, 10); // Lấy tối đa 10 chunks tốt nhất
+
+      if (goodChunks.length === 0) {
+        console.log('⚠️ No chunks passed quality threshold');
+        return this.getNoContextResponse(query);
+      }
+
+      // 8. Build context
+      const context = this.buildContext(goodChunks);
 
       if (context.trim().length < 50) {
         console.log('⚠️ Context too short');
         return this.getNoContextResponse(query);
       }
 
-      // 6. Generate response
+      console.log(`✓ Context built: ${context.length} chars, ${goodChunks.length} chunks`);
+
+      // 9. Generate response
       const response = await this.generateResponse(
         query, 
         context, 
-        messages, 
-        avgSimilarity
+        messages,
+        topSimilarity
       );
       
       console.log(`✓ Generated response (${response.length} chars)\n`);
@@ -85,24 +99,117 @@ export class RAGService {
     }
   }
 
-  // ✅ PHÁT HIỆN GREETING
+  // ✅ MỞ RỘNG QUERY - Tìm kiếm đa dạng hơn
+  private expandQuery(query: string): string[] {
+    const queries = [query]; // Query gốc
+
+    const lowerQuery = query.toLowerCase();
+
+    // Nếu hỏi về tuyển sinh
+    if (lowerQuery.includes('tuyển sinh') || lowerQuery.includes('tuyển')) {
+      queries.push('đề án tuyển sinh');
+      queries.push('phương thức tuyển sinh');
+      queries.push('điều kiện tuyển sinh');
+      queries.push('quy định tuyển sinh đại học');
+    }
+
+    // Nếu hỏi về năm cụ thể
+    if (lowerQuery.includes('2024') || lowerQuery.includes('năm 2024')) {
+      queries.push('đề án tuyển sinh năm 2024');
+      queries.push('tuyển sinh đại học chính quy 2024');
+    }
+
+    // Nếu hỏi về phương thức
+    if (lowerQuery.includes('phương thức') || lowerQuery.includes('phương pháp')) {
+      queries.push('xét tuyển');
+      queries.push('phương thức xét tuyển');
+      queries.push('hình thức tuyển sinh');
+    }
+
+    // Nếu hỏi về điều kiện/yêu cầu
+    if (lowerQuery.includes('điều kiện') || lowerQuery.includes('yêu cầu')) {
+      queries.push('yêu cầu đầu vào');
+      queries.push('tiêu chí xét tuyển');
+      queries.push('điều kiện dự tuyển');
+    }
+
+    // Nếu hỏi về điểm
+    if (lowerQuery.includes('điểm') || lowerQuery.includes('đầu vào')) {
+      queries.push('điểm chuẩn');
+      queries.push('điểm xét tuyển');
+      queries.push('ngưỡng đảm bảo chất lượng');
+    }
+
+    return [...new Set(queries)]; // Loại trùng lặp
+  }
+
+  // ✅ NGƯỠNG ĐỘNG - Thích ứng theo query
+  private getAdaptiveThresholds(query: string, chunks: SearchResult[]): {
+    minTop: number;
+    minChunk: number;
+  } {
+    // Phân loại query
+    const lowerQuery = query.toLowerCase();
+    const isSpecificQuery = 
+      lowerQuery.includes('năm 2024') || 
+      lowerQuery.includes('đề án') ||
+      lowerQuery.includes('phương thức') ||
+      lowerQuery.includes('điều kiện');
+
+    // Tính toán ngưỡng
+    if (isSpecificQuery) {
+      // Query cụ thể: yêu cầu similarity cao hơn
+      return {
+        minTop: 0.50,    // Giảm từ 0.55
+        minChunk: 0.40   // Giảm từ 0.45
+      };
+    } else {
+      // Query chung chung: linh hoạt hơn
+      return {
+        minTop: 0.45,
+        minChunk: 0.35
+      };
+    }
+  }
+
+  // ✅ DEDUPLICATE VÀ SORT
+  private deduplicateAndSort(chunks: SearchResult[]): SearchResult[] {
+    const uniqueMap = new Map<string, SearchResult>();
+
+    chunks.forEach(chunk => {
+      const content = chunk.content.trim();
+      const existing = uniqueMap.get(content);
+      
+      // Giữ chunk có similarity cao nhất
+      if (!existing || chunk.similarity > existing.similarity) {
+        uniqueMap.set(content, chunk);
+      }
+    });
+
+    // Sort theo similarity giảm dần
+    return Array.from(uniqueMap.values())
+      .sort((a, b) => b.similarity - a.similarity);
+  }
+
+  // ✅ GREETING DETECTION
   private isGreeting(query: string): boolean {
     const greetings = [
-      'xin chào', 'chào', 'hello', 'hi', 'hey', 'Xin chào',
+      'xin chào', 'chào', 'hello', 'hi', 'hey',
       'chào bạn', 'chào em', 'chào anh', 'chào chị',
     ];
     const lowerQuery = query.toLowerCase().trim();
     return greetings.some(g => 
       lowerQuery === g || 
-      (lowerQuery.length < 20 && lowerQuery.includes(g))
+      (lowerQuery.length < 20 && lowerQuery.startsWith(g))
     );
   }
 
-  // ✅ RESPONSE CHO GREETING
+  // ✅ GREETING RESPONSE
   private getGreetingResponse(): string {
     return `Xin chào! Tôi là trợ lý AI của Đại học Kinh tế Quốc dân.
 
 Tôi có thể hỗ trợ bạn về:
+• Đề án tuyển sinh đại học năm 2024
 • Chương trình đào tạo Công nghệ Thông tin
 • Quy chế học vụ (điểm, thi cử, học lại)
 • Đề cương các môn học
@@ -111,133 +218,147 @@ Tôi có thể hỗ trợ bạn về:
 Bạn muốn biết thông tin gì?`;
   }
 
-  // ✅ RESPONSE KHI KHÔNG CÓ CONTEXT
+  // ✅ NO CONTEXT RESPONSE
   private getNoContextResponse(query: string): string {
-    return `Xin lỗi, tôi không tìm thấy thông tin liên quan đến câu hỏi của bạn trong cơ sở dữ liệu tài liệu.
+    return `Xin lỗi, tôi không tìm thấy thông tin đáng tin cậy về câu hỏi này trong tài liệu.
 
-Tôi chỉ có thể tư vấn về:
+Tôi có thể tư vấn về:
+• Đề án tuyển sinh đại học (2024)
 • Chương trình đào tạo Công nghệ Thông tin
 • Quy chế học vụ
 • Đề cương môn học
-• Cấu trúc chương trình
 
-Vui lòng đặt lại câu hỏi cụ thể hơn hoặc liên hệ phòng Đào tạo để được hỗ trợ.`;
+Vui lòng:
+1. Đặt lại câu hỏi rõ ràng hơn (ví dụ: "Đề án tuyển sinh năm 2024 có gì?")
+2. Hoặc liên hệ Phòng Đào tạo để được hỗ trợ trực tiếp
+
+Bạn có thể thử hỏi theo cách khác không?`;
   }
 
-  // ✅ BUILD CONTEXT - LỌC KỸ
+  // ✅ BUILD CONTEXT - Cải thiện
   private buildContext(chunks: SearchResult[]): string {
     if (chunks.length === 0) return '';
 
-    const uniqueChunks = new Map<string, SearchResult>();
-    
-    chunks.forEach(chunk => {
-      const content = chunk.content.trim();
-      // Chỉ giữ chunks có similarity > 0.5
-      if (chunk.similarity > 0.5 && !uniqueChunks.has(content)) {
-        uniqueChunks.set(content, chunk);
-      }
-    });
-
-    if (uniqueChunks.size === 0) {
-      return '';
-    }
-
-    return Array.from(uniqueChunks.values())
-      .map((c, i) => `[Tài liệu ${i + 1}]\n${c.content}`)
-      .join('\n\n');
+    return chunks
+      .map((chunk, i) => {
+        const simPercent = (chunk.similarity * 100).toFixed(0);
+        return `[Tài liệu ${i + 1} - Độ tin cậy: ${simPercent}%]\n${chunk.content}`;
+      })
+      .join('\n\n---\n\n');
   }
 
-  // ✅ GENERATE RESPONSE - PROMPT TỐI ƯU
+  // ✅ GENERATE RESPONSE - Prompt cải tiến
   private async generateResponse(
     query: string,
     context: string,
     history: ChatMessage[],
-    avgSimilarity: number
+    topSimilarity: number
   ): Promise<string> {
     
-    // System prompt đơn giản, rõ ràng
-    const systemPrompt = `Bạn là trợ lý AI của Đại học Kinh tế Quốc dân, chuyên tư vấn về chương trình Công nghệ Thông tin.
+    // Đánh giá độ tin cậy
+    const confidence = topSimilarity > 0.65 ? 'cao' : 
+                      topSimilarity > 0.50 ? 'trung bình' : 'thấp';
+
+    const systemPrompt = `Bạn là trợ lý AI của Đại học Kinh tế Quốc dân, chuyên tư vấn về tuyển sinh và chương trình đào tạo.
 
 NHIỆM VỤ:
-- Trả lời câu hỏi dựa trên tài liệu được cung cấp
-- Trả lời đầy đủ, rõ ràng, dễ hiểu
-- Sử dụng bullet points khi liệt kê
+- Trả lời câu hỏi dựa CHÍNH XÁC trên tài liệu được cung cấp
+- Trích dẫn trực tiếp từ tài liệu khi có thể
+- Trả lời đầy đủ, có cấu trúc rõ ràng
+- Sử dụng bullet points khi liệt kê thông tin
 
-QUY TẮC:
-1. Chỉ dùng thông tin từ tài liệu
-2. Không bịa đặt hoặc suy đoán
-3. Nếu tài liệu không đủ, nói rõ và đề xuất liên hệ phòng Đào tạo
-4. Trả lời bằng tiếng Việt chuẩn, không có ký tự lạ`;
+QUY TẮC NGHIÊM NGẶT:
+1. CHỈ sử dụng thông tin từ tài liệu được cung cấp
+2. KHÔNG bịa đặt, suy đoán, hoặc thêm thông tin từ kiến thức chung
+3. Nếu tài liệu KHÔNG đủ thông tin, hãy nói rõ: "Theo tài liệu, [thông tin có], nhưng tôi không tìm thấy thông tin về [phần còn thiếu]"
+4. Khi trả lời về năm cụ thể (2024), phải chắc chắn thông tin từ tài liệu là về năm đó
+5. Trả lời bằng tiếng Việt chuẩn, tự nhiên
 
-    // User prompt với context
-    const userPrompt = `Dựa trên các tài liệu sau, hãy trả lời câu hỏi của sinh viên.
+ĐỘ TIN CẬY CỦA TÀI LIỆU: ${confidence}`;
 
-TÀI LIỆU THAM KHẢO:
+    const userPrompt = `Dựa trên các tài liệu sau đây, hãy trả lời câu hỏi của sinh viên.
+
 ${context}
 
-CÂU HỎI: ${query}
+---
 
-Hãy trả lời đầy đủ và rõ ràng.`;
+CÂU HỎI CỦA SINH VIÊN: ${query}
 
-    // Gọi Ollama
+Hãy trả lời chính xác dựa trên tài liệu. Nếu tài liệu không đủ thông tin, hãy nói rõ phần nào có và phần nào thiếu.`;
+
     const res = await this.ollama.chat({
       model: this.ollamaModel,
       messages: [
         { role: 'system', content: systemPrompt },
-        ...history.slice(-2, -1), // Chỉ lấy 1 message trước đó
+        ...history.slice(-3, -1), // Lấy 2 messages trước đó cho context
         { role: 'user', content: userPrompt },
       ],
       stream: false,
       options: {
-        temperature: 0.3,        // Cân bằng giữa chính xác và tự nhiên
-        top_p: 0.9,
-        top_k: 40,
-        repeat_penalty: 1.1,
-        num_predict: 800,        // Đủ dài cho câu trả lời đầy đủ
+        temperature: 0.2,        // Giảm nhiệt độ để chính xác hơn
+        top_p: 0.85,
+        top_k: 30,
+        repeat_penalty: 1.15,
+        num_predict: 1000,
       },
     });
 
-    // Clean response
     let response = res.message.content.trim();
 
-    // Loại bỏ các prefix không cần thiết
+    // Clean response
     response = response
       .replace(/^(Trả lời:|Câu trả lời:|Dựa vào tài liệu:|Dựa trên tài liệu:)\s*/gi, '')
-      .replace(/^\*\*.*?\*\*\s*/gi, '') // Loại bỏ bold markdown nếu có
+      .replace(/^\*\*.*?\*\*\s*/gi, '')
       .trim();
 
-    // Kiểm tra hallucination
+    // Warning nếu có dấu hiệu hallucination
     if (this.hasHallucination(response)) {
-      console.log('⚠️ Warning: Potential hallucination detected');
+      console.log('⚠️ Warning: Potential hallucination detected in response');
     }
 
     return response;
   }
 
-  // ✅ PHÁT HIỆN HALLUCINATION ĐỖN GIẢN
+  // ✅ HALLUCINATION DETECTION
   private hasHallucination(response: string): boolean {
-    const badPhrases = [
-      'theo tôi',
-      'tôi nghĩ',
-      'có lẽ',
+    const suspiciousPhrases = [
+      'theo tôi nghĩ',
+      'tôi đoán',
+      'có lẽ là',
       'thường thì',
-      'ước tính',
+      'có thể là',
+      'dự đoán',
+      'ước tính khoảng',
     ];
     
     const lowerResponse = response.toLowerCase();
-    return badPhrases.some(phrase => lowerResponse.includes(phrase));
+    return suspiciousPhrases.some(phrase => lowerResponse.includes(phrase));
   }
 
-  // Helper method
+  // ✅ TEST SEARCH - Debug tool
   async testSearch(query: string): Promise<{ query: string; results: SearchResult[] }> {
-    const queryEmbedding = await this.embeddingService.generateEmbedding(query);
-    const results = await this.db.searchSimilarChunks(queryEmbedding, 10);
-
     console.log(`\n🔍 Test search: "${query}"`);
-    results.forEach((r, i) => {
-      console.log(`[${i + 1}] Sim: ${(r.similarity * 100).toFixed(1)}% | ${r.content.substring(0, 100)}...`);
+    
+    const expandedQueries = this.expandQuery(query);
+    console.log(`✓ Expanded queries:`, expandedQueries);
+
+    let allResults: SearchResult[] = [];
+
+    for (const q of expandedQueries) {
+      const embedding = await this.embeddingService.generateEmbedding(q);
+      const results = await this.db.searchSimilarChunks(embedding, 5);
+      allResults.push(...results);
+    }
+
+    const uniqueResults = this.deduplicateAndSort(allResults);
+
+    console.log(`\n📊 Top ${Math.min(10, uniqueResults.length)} results:`);
+    uniqueResults.slice(0, 10).forEach((r, i) => {
+      console.log(`[${i + 1}] Sim: ${(r.similarity * 100).toFixed(1)}%`);
+      console.log(`    Content: ${r.content.substring(0, 120)}...`);
+      console.log('');
     });
 
-    return { query, results };
+    return { query, results: uniqueResults };
   }
 }

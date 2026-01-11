@@ -14,24 +14,30 @@ export class MinIOWatcherService {
     private db: DatabaseModel
   ) {}
 
-  /* Bắt đầu xem - Mỗi 5 phut check 1 lần */
+  /* Bắt đầu xem - Mỗi 5 phút check 1 lần */
   async start(): Promise<void> {
     console.log('MinIO Watcher started');
-
+    
     // Load files hiện tại
     await this.loadExistingFiles();
 
-    // Check mỗi 5 phut
-    this.intervalId = setInterval(() => {
-      this.checkNewFiles();
-    }, 300000); //đơn vị là mili giây
+    // Sync với database để ingest files thiếu
+    await this.syncWithDatabase();
+    
+    // Check ngay lập tức lần đầu
+    await this.checkNewFiles();
+    
+    // Check mỗi 5 phút
+    this.intervalId = setInterval(async () => {
+      await this.checkNewFiles(); 
+    }, 300000);
   }
 
-  /* Dừng xem  */
+  /* Dừng xem */
   stop(): void {
     if (this.intervalId) {
       clearInterval(this.intervalId);
-      console.log(' MinIO Watcher stopped');
+      console.log('MinIO Watcher stopped');
     }
   }
 
@@ -39,68 +45,79 @@ export class MinIOWatcherService {
    * Load danh sách files đã có
    */
   private async loadExistingFiles(): Promise<void> {
-    const folders = ['ctdt-co-dau-moc', 'de-cuong', 'quy-che-hoc-vu'];
-
-    for (const folder of folders) {
-      const prefix = `chatbot courses/${folder}/`;
-      const files = await this.minio.listFiles(prefix);
-
-      files.forEach(file => {
-        if (file.endsWith('.docx')) {
-          this.knownFiles.add(file);
-        }
-      });
+    try {
+      const folders = ['ctdt-co-dau-moc', 'de-cuong', 'quy-che-hoc-vu'];
+      
+      for (const folder of folders) {
+        const prefix = `chatbot courses/${folder}/`;
+        const files = await this.minio.listFiles(prefix);
+        
+        files.forEach(file => {
+          if (file.endsWith('.docx')) {
+            this.knownFiles.add(file);
+          }
+        });
+      }
+      
+      console.log(`✓ Tracking ${this.knownFiles.size} existing files`);
+    } catch (error: any) {
+      console.error('❌ Error loading existing files:', error.message);
     }
-
-    console.log(`✓ Tracking ${this.knownFiles.size} existing files`);
   }
 
   /* Check files mới */
   private async checkNewFiles(): Promise<void> {
-    console.log('🔍 Checking for new files...');
+    try {
+      console.log('🔍 Checking for new files...');
+      const folders = ['ctdt-co-dau-moc', 'de-cuong', 'quy-che-hoc-vu'];
+      const newFiles: string[] = [];
 
-    const folders = ['ctdt-co-dau-moc', 'de-cuong', 'quy-che-hoc-vu'];
-    const newFiles: string[] = [];
-
-    // Tìm files mới
-    for (const folder of folders) {
-      const prefix = `chatbot courses/${folder}/`;
-      const files = await this.minio.listFiles(prefix);
-
-      for (const file of files) {
-        if (file.endsWith('.docx') && !this.knownFiles.has(file)) {
-          newFiles.push(file);
-          this.knownFiles.add(file);
+      // Tìm files mới
+      for (const folder of folders) {
+        const prefix = `chatbot courses/${folder}/`;
+        const files = await this.minio.listFiles(prefix);
+        
+        for (const file of files) {
+          if (file.endsWith('.docx') && !this.knownFiles.has(file)) {
+            newFiles.push(file);
+            this.knownFiles.add(file);
+            console.log(`📄 New file detected: ${file}`);
+          }
         }
       }
-    }
 
-    // Nếu có files mới → ingest
-    if (newFiles.length > 0) {
-      console.log(`📥 Found ${newFiles.length} new file(s), ingesting...`);
-      await this.ingestFiles(newFiles);
-    } else {
-      console.log('✓ No new files');
+      // Nếu có files mới → ingest
+      if (newFiles.length > 0) {
+        console.log(`📥 Found ${newFiles.length} new file(s), ingesting...`);
+        await this.ingestFiles(newFiles);
+      } else {
+        console.log('✓ No new files');
+      }
+    } catch (error: any) {
+      console.error('❌ Error checking new files:', error.message);
     }
   }
 
-  // Ingest files mới//
+  // Ingest files mới
   private async ingestFiles(files: string[]): Promise<void> {
     for (const objectName of files) {
       try {
-        console.log(`\n📥 ${objectName}`);
-
+        console.log(`\n📥 Processing: ${objectName}`);
+        
         // 1. Download
         const buffer = await this.minio.getFile(objectName);
-
+        console.log(`  ✓ Downloaded (${buffer.length} bytes)`);
+        
         // 2. Extract text
         const rawText = await this.documentService.extractText(buffer, objectName);
         const text = this.documentService.cleanText(rawText);
-
-        if (!text) {
-          console.log('  ⚠️ No text, skipped');
+        
+        if (!text || text.trim().length === 0) {
+          console.log('  ⚠️ No text content, skipped');
           continue;
         }
+        
+        console.log(`  ✓ Extracted ${text.length} characters`);
 
         // 3. Save document
         const filename = objectName.split('/').pop() || objectName;
@@ -110,25 +127,77 @@ export class MinIOWatcherService {
           file_size: buffer.length,
           content_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         });
+        
+        console.log(`  ✓ Document saved with ID: ${documentId}`);
 
         // 4. Chunk & Embed
-        const chunks = this.documentService.chunkText(text, 300, 50);
-
+        const chunks = this.documentService.chunkText(text, 500, 100);
+        console.log(`  ✓ Created ${chunks.length} chunks`);
+        
         for (let i = 0; i < chunks.length; i++) {
           const embedding = await this.embeddingService.generateEmbedding(chunks[i]);
-
+          
           await this.db.insertChunk({
             document_id: documentId,
             content: chunks[i],
             chunk_index: i,
             embedding,
           });
+          
+          // Log progress mỗi 10 chunks
+          if ((i + 1) % 10 === 0 || i === chunks.length - 1) {
+            console.log(`  ✓ Embedded ${i + 1}/${chunks.length} chunks`);
+          }
         }
-
-        console.log(`  ✅ Done (${chunks.length} chunks)`);
+        
+        console.log(`  ✅ Successfully ingested: ${filename}`);
+        
       } catch (error: any) {
-        console.error(`  ❌ Error: ${error.message}`);
+        console.error(`  ❌ Error processing ${objectName}:`, error.message);
+        console.error(error.stack);
+        
+        // Remove from known files nếu fail để retry lần sau
+        this.knownFiles.delete(objectName);
       }
     }
   }
+  /**
+ * Đồng bộ lại: So sánh MinIO vs Database
+ */
+public async syncWithDatabase(): Promise<void> {
+  console.log('🔄 Syncing MinIO files with database...');
+  
+  try {
+    // 1. Lấy tất cả file paths từ database
+    const dbFiles = await this.db.getAllDocumentPaths();
+    const dbFileSet = new Set(dbFiles);
+    
+    console.log(`Database has ${dbFiles.length} documents`);
+    console.log(`MinIO has ${this.knownFiles.size} files`);
+    
+    // 2. Tìm files trong MinIO nhưng chưa có trong DB
+    const missingFiles: string[] = [];
+    
+    for (const file of this.knownFiles) {
+      if (!dbFileSet.has(file)) {
+        missingFiles.push(file);
+      }
+    }
+    
+    // 3. Ingest các files thiếu
+    if (missingFiles.length > 0) {
+      console.log(`\n⚠️  Found ${missingFiles.length} files not in database:`);
+      missingFiles.forEach(f => console.log(`   - ${f}`));
+      
+      console.log('\n📥 Starting sync ingest...');
+      await this.ingestFiles(missingFiles);
+      console.log('✅ Sync completed!');
+    } else {
+      console.log('✅ All files are already in database');
+    }
+    
+  } catch (error: any) {
+    console.error('❌ Sync error:', error.message);
+  }
+}
 }

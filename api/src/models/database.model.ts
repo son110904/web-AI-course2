@@ -154,4 +154,10 @@ export class DatabaseModel {
     documents: documentsResult.rows
   };
 }
+async getAllDocumentPaths(): Promise<string[]> {
+  const result = await this.pool.query(
+    'SELECT file_path FROM documents'
+  );
+  return result.rows.map(row => row.file_path);
+}
 }
