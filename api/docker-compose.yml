@@ -30,7 +30,7 @@ services:
       - |
         ollama serve &
         sleep 10
-        ollama pull qwen2.5:1.5b-instruct-q4_K_M
+        ollama pull phi3.5:3.8b-mini-instruct-q4_K_M
         wait
 
 volumes:
