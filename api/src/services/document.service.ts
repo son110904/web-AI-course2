@@ -35,8 +35,18 @@ export class DocumentService {
   }
 
   private async extractDocx(buffer: Buffer): Promise<string> {
-    const result = await mammoth.extractRawText({ buffer });
-    return result.value;
+    const [rawResult, htmlResult] = await Promise.all([
+      mammoth.extractRawText({ buffer }),
+      mammoth.convertToHtml({ buffer })
+    ]);
+
+    const htmlText = this.htmlToText(htmlResult.value || '');
+    const rawText = rawResult.value || '';
+
+    return [htmlText, rawText]
+      .map((text) => text.trim())
+      .filter(Boolean)
+      .join('\n');
   }
 
   private extractExcel(buffer: Buffer): string {
@@ -54,7 +64,8 @@ export class DocumentService {
     return text
       .replace(/\r\n/g, '\n')
       .replace(/\n{2,}/g, '\n')
-      .replace(/[\t ]+/g, ' ')
+      .replace(/\t+/g, ' | ')
+      .replace(/ {2,}/g, ' ')
       .trim();
   }
 
@@ -70,6 +81,16 @@ export class DocumentService {
 
     return chunks.filter(Boolean);
   }
-}
 
+  private htmlToText(html: string): string {
+    return html
+      .replace(/<(\/)?(p|div|br|tr|li|h[1-6])[^>]*>/gi, '\n')
+      .replace(/<(td|th)[^>]*>/gi, '\t')
+      .replace(/<[^>]+>/g, '')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>');
+  }
+}
 
