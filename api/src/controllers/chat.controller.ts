@@ -29,4 +29,53 @@ export class ChatController {
       });
     }
   }
+
+  async ask(req: Request, res: Response): Promise<void> {
+    try {
+      const { session_id, model_id, user, prompt, context } = req.body;
+
+      if (!session_id || !model_id || !user || !prompt) {
+        res.status(400).json({
+          status: 'error',
+          message: 'Thiếu dữ liệu bắt buộc: session_id, model_id, user, prompt',
+        });
+        return;
+      }
+
+      const history = Array.isArray(context?.history) ? context.history : [];
+      const messages: ChatMessage[] = [
+        ...history.map((m: any) => ({
+          role: m.role === 'user' ? 'user' : 'assistant',
+          content: String(m.content || ''),
+        })),
+        {
+          role: 'user',
+          content: String(prompt),
+        },
+      ];
+
+      const startTime = Date.now();
+      const content = await this.ragService.chat(messages);
+      const responseTimeMs = Date.now() - startTime;
+
+      res.json({
+        session_id,
+        status: 'success',
+        content_markdown: content,
+        meta: {
+          model: model_id,
+          response_time_ms: responseTimeMs,
+          tokens_used: 0,
+        },
+        attachments: [],
+      });
+    } catch (error) {
+      console.error('Ask error:', error);
+      res.status(500).json({
+        session_id: req.body?.session_id,
+        status: 'error',
+        message: 'Xin lỗi, hệ thống đang gặp lỗi.',
+      });
+    }
+  }
 }
