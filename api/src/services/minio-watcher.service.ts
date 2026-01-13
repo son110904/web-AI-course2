@@ -130,23 +130,36 @@ export class MinIOWatcherService {
         
         console.log(`  ✓ Document saved with ID: ${documentId}`);
 
-        // 4. Chunk & Embed
-        const chunks = this.documentService.chunkText(text, 500, 100);
-        console.log(`  ✓ Created ${chunks.length} chunks`);
-        
-        for (let i = 0; i < chunks.length; i++) {
-          const embedding = await this.embeddingService.generateEmbedding(chunks[i]);
-          
-          await this.db.insertChunk({
-            document_id: documentId,
-            content: chunks[i],
-            chunk_index: i,
-            embedding,
-          });
-          
-          // Log progress mỗi 10 chunks
-          if ((i + 1) % 10 === 0 || i === chunks.length - 1) {
-            console.log(`  ✓ Embedded ${i + 1}/${chunks.length} chunks`);
+        // 4. Semantic Chunk & Embed (parent-child)
+        const chunkGroups = await this.documentService.createSemanticChunks(
+          text,
+          this.embeddingService
+        );
+        const totalChunks = chunkGroups.reduce(
+          (sum, group) => sum + group.children.length,
+          0
+        );
+        console.log(`  ✓ Created ${totalChunks} chunks from ${chunkGroups.length} sections`);
+
+        let chunkIndex = 0;
+        for (const group of chunkGroups) {
+          for (const child of group.children) {
+            const embedding = await this.embeddingService.generateEmbedding(child);
+
+            await this.db.insertChunk({
+              document_id: documentId,
+              content: child,
+              chunk_index: chunkIndex,
+              parent_index: group.parentIndex,
+              parent_content: group.parentContent,
+              embedding,
+            });
+
+            chunkIndex += 1;
+
+            if (chunkIndex % 10 === 0 || chunkIndex === totalChunks) {
+              console.log(`  ✓ Embedded ${chunkIndex}/${totalChunks} chunks`);
+            }
           }
         }
         

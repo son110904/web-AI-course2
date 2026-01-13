@@ -62,9 +62,16 @@ export class IngestController {
                 continue;
               }
 
-              // Chunk text
-              const chunks = this.documentService.chunkText(text, 300, 50);
-              console.log(`  ✓ Created ${chunks.length} chunks`);
+              // Semantic chunk text (parent-child)
+              const chunkGroups = await this.documentService.createSemanticChunks(
+                text,
+                this.embeddingService
+              );
+              const fileChunkCount = chunkGroups.reduce(
+                (sum, group) => sum + group.children.length,
+                0
+              );
+              console.log(`  ✓ Created ${fileChunkCount} chunks from ${chunkGroups.length} sections`);
 
               // Insert document vào DB để lấy UUID
               const documentId = await this.db.insertDocument({
@@ -77,25 +84,30 @@ export class IngestController {
               console.log(`  ✓ Document inserted with ID: ${documentId}`);
 
               // Embed và save từng chunk
-              for (let i = 0; i < chunks.length; i++) {
-                const embedding = await this.embeddingService.generateEmbedding(chunks[i]);
-                
-                await this.db.insertChunk({
-                  document_id: documentId,
-                  content: chunks[i],
-                  chunk_index: i,
-                  embedding,
-                });
+              let chunkIndex = 0;
+              for (const group of chunkGroups) {
+                for (const child of group.children) {
+                  const embedding = await this.embeddingService.generateEmbedding(child);
+                  
+                  await this.db.insertChunk({
+                    document_id: documentId,
+                    content: child,
+                    chunk_index: chunkIndex,
+                    parent_index: group.parentIndex,
+                    parent_content: group.parentContent,
+                    embedding,
+                  });
 
-                totalChunks++;
-                
-                // Log progress mỗi 10 chunks
-                if ((i + 1) % 10 === 0) {
-                  console.log(`  ✓ Processed ${i + 1}/${chunks.length} chunks`);
+                  chunkIndex += 1;
+                  totalChunks++;
+                  
+                  if (chunkIndex % 10 === 0) {
+                    console.log(`  ✓ Processed ${chunkIndex}/${fileChunkCount} chunks`);
+                  }
                 }
               }
 
-              console.log(`✅ Successfully ingested: ${objectName} (${chunks.length} chunks)`);
+              console.log(`✅ Successfully ingested: ${objectName} (${fileChunkCount} chunks)`);
 
             } catch (fileError: any) {
               const errorMsg = `Error processing ${objectName}: ${fileError.message}`;
