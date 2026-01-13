@@ -89,80 +89,6 @@ export class DocumentService {
     return chunks.filter(Boolean);
   }
 
-  async createSemanticChunks(
-    text: string,
-    embeddingService: EmbeddingService,
-    options?: {
-      parentChunkSize?: number;
-      childChunkSize?: number;
-      similarityThreshold?: number;
-      minParentChunkSize?: number;
-    }
-  ): Promise<ChunkGroup[]> {
-    const parentChunkSize = options?.parentChunkSize ?? 1200;
-    const childChunkSize = options?.childChunkSize ?? 320;
-    const similarityThreshold = options?.similarityThreshold ?? 0.78;
-    const minParentChunkSize = options?.minParentChunkSize ?? 400;
-
-    const units = this.splitSemanticUnits(text);
-    if (units.length === 0) {
-      return [];
-    }
-
-    const parentChunks: string[] = [];
-    let current: string[] = [];
-    let currentLength = 0;
-    let previousEmbedding: number[] | null = null;
-
-    for (const unit of units) {
-      const unitText = unit.text.trim();
-      if (!unitText) {
-        continue;
-      }
-
-      const unitEmbedding = await embeddingService.generateEmbedding(unitText);
-      const currentText = current.join(' ').trim();
-
-      const similarity = previousEmbedding
-        ? this.cosineSimilarity(previousEmbedding, unitEmbedding)
-        : 1;
-
-      const shouldSplitBySimilarity =
-        unit.hardBreak || similarity < similarityThreshold;
-      const shouldSplitByLength =
-        currentLength + unitText.length > parentChunkSize;
-
-      if (
-        currentText.length > 0 &&
-        (shouldSplitBySimilarity || shouldSplitByLength) &&
-        currentText.length >= minParentChunkSize
-      ) {
-        parentChunks.push(currentText);
-        current = [unitText];
-        currentLength = unitText.length;
-      } else {
-        current.push(unitText);
-        currentLength += unitText.length + 1;
-      }
-
-      previousEmbedding = unitEmbedding;
-    }
-
-    if (current.length > 0) {
-      parentChunks.push(current.join(' ').trim());
-    }
-
-    const normalizedParents = parentChunks.flatMap((chunk) =>
-      this.recursiveSplit(chunk, parentChunkSize)
-    );
-
-    return normalizedParents.map((parentContent, parentIndex) => ({
-      parentIndex,
-      parentContent,
-      children: this.recursiveSplit(parentContent, childChunkSize),
-    }));
-  }
-
   private htmlToText(html: string): string {
     return html
       .replace(/<(\/)?(p|div|br|tr|li|h[1-6])[^>]*>/gi, '\n')
@@ -173,6 +99,7 @@ export class DocumentService {
       .replace(/&lt;/g, '<')
       .replace(/&gt;/g, '>');
   }
+}
 
   private splitSemanticUnits(text: string): Array<{ text: string; hardBreak: boolean }> {
     const paragraphs = text.split(/\n{2,}/);
