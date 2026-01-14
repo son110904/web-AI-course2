@@ -15,9 +15,9 @@ export class IngestController {
   // 🚀 INGEST TOÀN BỘ BUCKET SYLLABUS
   async ingestAll(req: Request, res: Response) {
     try {
-      const basePrefix = 'chatbot courses';
-      const folders = ['ctdt-co-dau-moc', 'de-cuong', 'quy-che-hoc-vu'];
-      
+      const basePrefix = 'courses-chatbot';
+      const folders = ['curriculum', 'relegation', 'syllabus'];
+       
       let totalFiles = 0;
       let totalChunks = 0;
       const errors: string[] = [];

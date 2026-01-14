@@ -87,7 +87,7 @@ export class UploadController {
     }
   }
 
-  // 📊 Kiểm tra trạng thái upload
+  // Kiểm tra trạng thái upload
   async checkUploadStatus(req: Request, res: Response) {
     try {
       const statsQuery = await this.db['pool'].query(`

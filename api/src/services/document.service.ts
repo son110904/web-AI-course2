@@ -1,52 +1,41 @@
-const pdfParse: any = require('pdf-parse');
+import pdfParse from 'pdf-parse';
 import mammoth from 'mammoth';
 import * as XLSX from 'xlsx';
 
 export class DocumentService {
   constructor() {}
 
-  // MAIN: extract text from Buffer
   async extractText(buffer: Buffer, filename: string): Promise<string> {
     const ext = filename.split('.').pop()?.toLowerCase();
 
     switch (ext) {
       case 'pdf':
-        return this.extractPdf(buffer);
+        return this.cleanText(await this.extractPdf(buffer));
 
       case 'docx':
-        return this.extractDocx(buffer);
+        return this.cleanText(await this.extractDocx(buffer));
 
       case 'txt':
-        return buffer.toString('utf-8');
+        return this.cleanText(buffer.toString('utf-8'));
 
       case 'xlsx':
       case 'xls':
-        return this.extractExcel(buffer);
+        return this.cleanText(this.extractExcel(buffer));
 
       default:
         throw new Error(`Unsupported file type: ${ext}`);
     }
   }
 
-  // HELPERS
+
   private async extractPdf(buffer: Buffer): Promise<string> {
     const data = await pdfParse(buffer);
-    return data.text;
+    return data.text || '';
   }
 
   private async extractDocx(buffer: Buffer): Promise<string> {
-    const [rawResult, htmlResult] = await Promise.all([
-      mammoth.extractRawText({ buffer }),
-      mammoth.convertToHtml({ buffer })
-    ]);
-
-    const htmlText = this.htmlToText(htmlResult.value || '');
-    const rawText = rawResult.value || '';
-
-    return [htmlText, rawText]
-      .map((text) => text.trim())
-      .filter(Boolean)
-      .join('\n');
+    const raw = await mammoth.extractRawText({ buffer });
+    return raw.value || '';
   }
 
   private extractExcel(buffer: Buffer): string {
@@ -58,39 +47,83 @@ export class DocumentService {
       .join('\n');
   }
 
-  // CLEAN + CHUNK
-  cleanText(text: string): string {
-    if (!text) return '';
+
+  public cleanText(text: string): string {
     return text
       .replace(/\r\n/g, '\n')
-      .replace(/\n{2,}/g, '\n')
-      .replace(/\t+/g, ' | ')
-      .replace(/ {2,}/g, ' ')
+      .replace(/\n{3,}/g, '\n\n')
+      .replace(/[ \t]+/g, ' ')
+      .replace(/\n +/g, '\n')
       .trim();
   }
 
-  chunkText(text: string, chunkSize = 500, overlap = 100): string[] {
-    const chunks: string[] = [];
-    let start = 0;
+  chunkText(text: string): string[] {
+    if (!text) return [];
 
-    while (start < text.length) {
-      const end = Math.min(start + chunkSize, text.length);
-      chunks.push(text.slice(start, end));
-      start += chunkSize - overlap;
+    // 1. Split by headings
+    const sections = this.splitByHeadings(text);
+
+    // 2. Build chunks from sections
+    const chunks: string[] = [];
+    let buffer = '';
+
+    for (const section of sections) {
+      if ((buffer + section).length < 1200) {
+        buffer += (buffer ? '\n\n' : '') + section;
+      } else {
+        if (buffer.length > 200) {
+          chunks.push(buffer.trim());
+        }
+        buffer = section;
+      }
     }
 
-    return chunks.filter(Boolean);
+    if (buffer.length > 200) {
+      chunks.push(buffer.trim());
+    }
+
+    return chunks;
   }
 
-  private htmlToText(html: string): string {
-    return html
-      .replace(/<(\/)?(p|div|br|tr|li|h[1-6])[^>]*>/gi, '\n')
-      .replace(/<(td|th)[^>]*>/gi, '\t')
-      .replace(/<[^>]+>/g, '')
-      .replace(/&nbsp;/g, ' ')
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>');
+
+  private splitByHeadings(text: string): string[] {
+    const lines = text.split('\n');
+    const sections: string[] = [];
+
+    let current = '';
+
+    for (const line of lines) {
+      if (this.isHeading(line)) {
+        if (current.trim().length > 0) {
+          sections.push(current.trim());
+        }
+        current = line.trim();
+      } else {
+        current += '\n' + line.trim();
+      }
+    }
+
+    if (current.trim().length > 0) {
+      sections.push(current.trim());
+    }
+
+    return sections;
+  }
+
+  private isHeading(line: string): boolean {
+    const l = line.trim();
+
+    return (
+      /^CHƯƠNG\s+\d+/i.test(l) ||
+      /^Chương\s+\d+/i.test(l) ||
+      /^MỤC\s+\d+/i.test(l) ||
+      /^Mục\s+\d+/i.test(l) ||
+      /^ĐIỀU\s+\d+/i.test(l) ||
+      /^Điều\s+\d+/i.test(l) ||
+      /^[IVX]+\./.test(l) ||          // I. II. III.
+      /^\d+\.\d+/.test(l) ||           // 1.1 2.3
+      /^\d+\./.test(l) ||              // 1. 2.
+      /^[A-ZÀ-Ỵ\s]{5,}$/.test(l)       // TIÊU ĐỀ VIẾT HOA
+    );
   }
 }
-

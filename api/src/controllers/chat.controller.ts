@@ -30,7 +30,7 @@ export class ChatController {
     }
   }
 
-  async ask(req: Request, res: Response): Promise<void> {
+  async ask(req: Request, res: Response): Promise<void> { //tích hợp với repo course-ai
     try {
       const { session_id, model_id, user, prompt, context } = req.body;
 
