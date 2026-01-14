@@ -39,44 +39,32 @@ export class UploadController {
         content_type: 'unknown',
       });
 
-      // Semantic chunk text (parent-child)
-      const chunkGroups = await this.documentService.createSemanticChunks(
-        text,
-        this.embeddingService
-      );
-      const totalChunks = chunkGroups.reduce(
-        (sum, group) => sum + group.children.length,
-        0
-      );
+      //  Chunk text
+      const chunks = this.documentService.chunkText(text);
 
       // Embed + insert chunks
-      let chunkIndex = 0;
-      for (const group of chunkGroups) {
-        for (const child of group.children) {
-          if (!child) continue;
+      for (let i = 0; i < chunks.length; i++) {
+        const chunkText = chunks[i];
+        if (!chunkText) continue;
 
-          const embedding = await this.embeddingService.generateEmbedding(child);
+        const embedding = await this.embeddingService.generateEmbedding(chunkText);
 
-          if (embedding.length !== 384) {
-            throw new Error(`Embedding dimension invalid: ${embedding.length}`);
-          }
-
-          await this.db.insertChunk({
-            document_id: documentId,
-            content: child,
-            chunk_index: chunkIndex,
-            parent_index: group.parentIndex,
-            parent_content: group.parentContent,
-            embedding,
-          });
-          chunkIndex += 1;
+        if (embedding.length !== 384) {
+          throw new Error(`Embedding dimension invalid: ${embedding.length}`);
         }
+
+        await this.db.insertChunk({
+          document_id: documentId,
+          content: chunkText,
+          chunk_index: i,
+          embedding,
+        });
       }
 
       return res.json({
         message: 'Ingest thành công',
         documentId,
-        totalChunks,
+        totalChunks: chunks.length,
       });
     } catch (error: any) {
       console.error('Ingest error:', error);

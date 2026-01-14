@@ -31,11 +31,11 @@ export class RAGService {
       const expandedQueries = this.expandQuery(query);
       console.log(`✓ Expanded to ${expandedQueries.length} queries`);
 
-      // 3. Search với multiple queries (hybrid)
+      // 3. Search với multiple queries
       let allChunks: SearchResult[] = [];
       for (const q of expandedQueries) {
         const embedding = await this.embeddingService.generateEmbedding(q);
-        const chunks = await this.db.searchHybridChunks(embedding, q, 8);
+        const chunks = await this.db.searchSimilarChunks(embedding, 8);
         allChunks.push(...chunks);
       }
 
@@ -45,27 +45,25 @@ export class RAGService {
 
       // Log top results
       uniqueChunks.slice(0, 5).forEach((c, i) => {
-        const preview = (c.parent_content ?? c.content).substring(0, 80);
-        const score = this.getScore(c);
-        console.log(`  [${i + 1}] Score: ${(score * 100).toFixed(1)}% | ${preview}...`);
+        console.log(`  [${i + 1}] Similarity: ${(c.similarity * 100).toFixed(1)}% | ${c.content.substring(0, 80)}...`);
       });
 
       // 5. NGƯỠNG ĐỘNG - Adjust based on query type
-      const thresholds = this.getAdaptiveThresholds(query);
-      const topScore = uniqueChunks.length > 0 ? this.getScore(uniqueChunks[0]) : 0;
+      const thresholds = this.getAdaptiveThresholds(query, uniqueChunks);
+      const topSimilarity = uniqueChunks.length > 0 ? uniqueChunks[0].similarity : 0;
 
-      console.log(`✓ Top score: ${(topScore * 100).toFixed(1)}%`);
+      console.log(`✓ Top similarity: ${(topSimilarity * 100).toFixed(1)}%`);
       console.log(`✓ Threshold: ${(thresholds.minTop * 100).toFixed(1)}%`);
 
       // 6. Check quality với ngưỡng động
-      if (topScore < thresholds.minTop) {
-        console.log('⚠️ Score too low - no reliable context found');
+      if (topSimilarity < thresholds.minTop) {
+        console.log('⚠️ Similarity too low - no reliable context found');
         return this.getNoContextResponse(query);
       }
 
       // 7. Lấy chunks tốt
       const goodChunks = uniqueChunks.filter(c => 
-        this.getScore(c) >= thresholds.minChunk
+        c.similarity >= thresholds.minChunk
       ).slice(0, 10); // Lấy tối đa 10 chunks tốt nhất
 
       if (goodChunks.length === 0) {
@@ -88,7 +86,7 @@ export class RAGService {
         query, 
         context, 
         messages,
-        topScore
+        topSimilarity
       );
       
       console.log(`✓ Response: ${response.length} chars\n`);
@@ -157,7 +155,7 @@ export class RAGService {
   }
 
   // ✅ NGƯỠNG ĐỘNG - Thích ứng theo query
-  private getAdaptiveThresholds(query: string): {
+  private getAdaptiveThresholds(query: string, chunks: SearchResult[]): {
     minTop: number;
     minChunk: number;
   } {
@@ -173,14 +171,14 @@ export class RAGService {
     if (isSpecificQuery) {
       // Query cụ thể: yêu cầu similarity cao hơn
       return {
-        minTop: 0.45,
-        minChunk: 0.30
+        minTop: 0.50,    // Giảm từ 0.55
+        minChunk: 0.40   // Giảm từ 0.45
       };
     } else {
       // Query chung chung: linh hoạt hơn
       return {
-        minTop: 0.35,
-        minChunk: 0.25
+        minTop: 0.45,
+        minChunk: 0.35
       };
     }
   }
@@ -189,18 +187,18 @@ export class RAGService {
     const map = new Map<string, SearchResult>();
 
     chunks.forEach(chunk => {
-      const content = (chunk.parent_content ?? chunk.content).trim();
+      const content = chunk.content.trim();
       const existing = uniqueMap.get(content);
       
       // Giữ chunk có similarity cao nhất
-      if (!existing || this.getScore(chunk) > this.getScore(existing)) {
+      if (!existing || chunk.similarity > existing.similarity) {
         uniqueMap.set(content, chunk);
       }
     });
 
     // Sort theo similarity giảm dần
     return Array.from(uniqueMap.values())
-      .sort((a, b) => this.getScore(b) - this.getScore(a));
+      .sort((a, b) => b.similarity - a.similarity);
   }
 
 
@@ -247,9 +245,8 @@ Bạn muốn hỏi về vấn đề gì khác?`;
 
     return chunks
       .map((chunk, i) => {
-        const scorePercent = (this.getScore(chunk) * 100).toFixed(0);
-        const content = chunk.parent_content ?? chunk.content;
-        return `[Tài liệu ${i + 1} - Độ tin cậy: ${scorePercent}%]\n${content}`;
+        const simPercent = (chunk.similarity * 100).toFixed(0);
+        return `[Tài liệu ${i + 1} - Độ tin cậy: ${simPercent}%]\n${chunk.content}`;
       })
       .join('\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n');
   }
@@ -259,12 +256,12 @@ Bạn muốn hỏi về vấn đề gì khác?`;
     query: string,
     context: string,
     history: ChatMessage[],
-    topScore: number
+    topSimilarity: number
   ): Promise<string> {
     
     // Đánh giá độ tin cậy
-    const confidence = topScore > 0.65 ? 'cao' : 
-                      topScore > 0.50 ? 'trung bình' : 'thấp';
+    const confidence = topSimilarity > 0.65 ? 'cao' : 
+                      topSimilarity > 0.50 ? 'trung bình' : 'thấp';
 
     const systemPrompt = `Bạn là trợ lý AI của Đại học Kinh tế Quốc dân.
 
@@ -343,16 +340,6 @@ Hãy trả lời dựa trên tài liệu. Nếu tài liệu không đủ, hãy n
     return suspiciousPhrases.some(phrase => lowerResponse.includes(phrase));
   }
 
-  private getScore(chunk: SearchResult): number {
-    if (typeof chunk.combined_score === 'number') {
-      return chunk.combined_score;
-    }
-    if (typeof chunk.similarity === 'number') {
-      return chunk.similarity;
-    }
-    return 0;
-  }
-
   // ✅ TEST SEARCH - Debug tool
   async testSearch(query: string): Promise<{ query: string; results: SearchResult[] }> {
     console.log(`\n🔍 Test search: "${query}"`);
@@ -364,7 +351,7 @@ Hãy trả lời dựa trên tài liệu. Nếu tài liệu không đủ, hãy n
 
     for (const q of expandedQueries) {
       const embedding = await this.embeddingService.generateEmbedding(q);
-      const results = await this.db.searchHybridChunks(embedding, q, 5);
+      const results = await this.db.searchSimilarChunks(embedding, 5);
       allResults.push(...results);
     }
 
@@ -372,8 +359,8 @@ Hãy trả lời dựa trên tài liệu. Nếu tài liệu không đủ, hãy n
 
     console.log(`\n📊 Top ${Math.min(10, uniqueResults.length)} results:`);
     uniqueResults.slice(0, 10).forEach((r, i) => {
-      console.log(`[${i + 1}] Score: ${(this.getScore(r) * 100).toFixed(1)}%`);
-      console.log(`    Content: ${(r.parent_content ?? r.content).substring(0, 120)}...`);
+      console.log(`[${i + 1}] Sim: ${(r.similarity * 100).toFixed(1)}%`);
+      console.log(`    Content: ${r.content.substring(0, 120)}...`);
       console.log('');
     });
 
