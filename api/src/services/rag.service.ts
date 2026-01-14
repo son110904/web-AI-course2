@@ -31,11 +31,11 @@ export class RAGService {
       const expandedQueries = this.expandQuery(query);
       console.log(`✓ Expanded to ${expandedQueries.length} queries`);
 
-      // 3. Search với multiple queries
+      // 3. Search với multiple queries (hybrid)
       let allChunks: SearchResult[] = [];
       for (const q of expandedQueries) {
         const embedding = await this.embeddingService.generateEmbedding(q);
-        const chunks = await this.db.searchSimilarChunks(embedding, 8);
+        const chunks = await this.db.searchHybridChunks(embedding, q, 8);
         allChunks.push(...chunks);
       }
 
@@ -45,26 +45,28 @@ export class RAGService {
 
       // Log top results
       uniqueChunks.slice(0, 5).forEach((c, i) => {
-        console.log(`  [${i + 1}] Similarity: ${(c.similarity * 100).toFixed(1)}%`);
+        const preview = (c.parent_content ?? c.content).substring(0, 80);
+        const score = this.getScore(c);
+        console.log(`  [${i + 1}] Score: ${(score * 100).toFixed(1)}% | ${preview}...`);
       });
 
-      // 5. Ngưỡng động
+      // 5. NGƯỠNG ĐỘNG - Adjust based on query type
       const thresholds = this.getAdaptiveThresholds(query);
-      const topSimilarity = uniqueChunks.length > 0 ? uniqueChunks[0].similarity : 0;
+      const topScore = uniqueChunks.length > 0 ? this.getScore(uniqueChunks[0]) : 0;
 
-      console.log(`✓ Top similarity: ${(topSimilarity * 100).toFixed(1)}%`);
+      console.log(`✓ Top score: ${(topScore * 100).toFixed(1)}%`);
       console.log(`✓ Threshold: ${(thresholds.minTop * 100).toFixed(1)}%`);
 
-      // 6. Check quality
-      if (topSimilarity < thresholds.minTop) {
-        console.log('Similarity too low');
+      // 6. Check quality với ngưỡng động
+      if (topScore < thresholds.minTop) {
+        console.log('⚠️ Score too low - no reliable context found');
         return this.getNoContextResponse(query);
       }
 
       // 7. Lấy chunks tốt
       const goodChunks = uniqueChunks.filter(c => 
-        c.similarity >= thresholds.minChunk
-      ).slice(0, 8);
+        this.getScore(c) >= thresholds.minChunk
+      ).slice(0, 10); // Lấy tối đa 10 chunks tốt nhất
 
       if (goodChunks.length === 0) {
         console.log('No good chunks');
@@ -86,7 +88,7 @@ export class RAGService {
         query, 
         context, 
         messages,
-        topSimilarity
+        topScore
       );
       
       console.log(`✓ Response: ${response.length} chars\n`);
@@ -154,46 +156,51 @@ export class RAGService {
     return [...new Set(queries)];
   }
 
-  private getAdaptiveThresholds(query: string): { minTop: number; minChunk: number } {
-    const lower = query.toLowerCase();
-    
-    // Query cụ thể → yêu cầu cao hơn
-    const isSpecific = 
-      lower.includes('năm 2024') || 
-      lower.includes('đề án') ||
-      lower.includes('phương thức') ||
-      lower.match(/\d+/) || // Có số
-      lower.includes('điều') ||
-      lower.includes('quy định');
+  // ✅ NGƯỠNG ĐỘNG - Thích ứng theo query
+  private getAdaptiveThresholds(query: string): {
+    minTop: number;
+    minChunk: number;
+  } {
+    // Phân loại query
+    const lowerQuery = query.toLowerCase();
+    const isSpecificQuery = 
+      lowerQuery.includes('năm 2024') || 
+      lowerQuery.includes('đề án') ||
+      lowerQuery.includes('phương thức') ||
+      lowerQuery.includes('điều kiện');
 
-    if (isSpecific) {
+    // Tính toán ngưỡng
+    if (isSpecificQuery) {
+      // Query cụ thể: yêu cầu similarity cao hơn
       return {
-        minTop: 0.48,    
-        minChunk: 0.38   
+        minTop: 0.45,
+        minChunk: 0.30
+      };
+    } else {
+      // Query chung chung: linh hoạt hơn
+      return {
+        minTop: 0.35,
+        minChunk: 0.25
       };
     }
-
-    // Query chung → linh hoạt hơn
-    return {
-      minTop: 0.42,      // 42%
-      minChunk: 0.32     // 32%
-    };
   }
 
   private deduplicateAndSort(chunks: SearchResult[]): SearchResult[] {
     const map = new Map<string, SearchResult>();
 
     chunks.forEach(chunk => {
-      const content = chunk.content.trim();
-      const existing = map.get(content);
+      const content = (chunk.parent_content ?? chunk.content).trim();
+      const existing = uniqueMap.get(content);
       
-      if (!existing || chunk.similarity > existing.similarity) {
-        map.set(content, chunk);
+      // Giữ chunk có similarity cao nhất
+      if (!existing || this.getScore(chunk) > this.getScore(existing)) {
+        uniqueMap.set(content, chunk);
       }
     });
 
-    return Array.from(map.values())
-      .sort((a, b) => b.similarity - a.similarity);
+    // Sort theo similarity giảm dần
+    return Array.from(uniqueMap.values())
+      .sort((a, b) => this.getScore(b) - this.getScore(a));
   }
 
 
@@ -240,8 +247,9 @@ Bạn muốn hỏi về vấn đề gì khác?`;
 
     return chunks
       .map((chunk, i) => {
-        const sim = (chunk.similarity * 100).toFixed(0);
-        return `[Tài liệu ${i + 1} - Độ liên quan: ${sim}%]\n${chunk.content}`;
+        const scorePercent = (this.getScore(chunk) * 100).toFixed(0);
+        const content = chunk.parent_content ?? chunk.content;
+        return `[Tài liệu ${i + 1} - Độ tin cậy: ${scorePercent}%]\n${content}`;
       })
       .join('\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n');
   }
@@ -251,11 +259,12 @@ Bạn muốn hỏi về vấn đề gì khác?`;
     query: string,
     context: string,
     history: ChatMessage[],
-    topSimilarity: number
+    topScore: number
   ): Promise<string> {
     
-    const confidence = topSimilarity > 0.60 ? 'CAO' : 
-                      topSimilarity > 0.45 ? 'TRUNG BÌNH' : 'THẤP';
+    // Đánh giá độ tin cậy
+    const confidence = topScore > 0.65 ? 'cao' : 
+                      topScore > 0.50 ? 'trung bình' : 'thấp';
 
     const systemPrompt = `Bạn là trợ lý AI của Đại học Kinh tế Quốc dân.
 
@@ -330,7 +339,44 @@ Hãy trả lời dựa trên tài liệu. Nếu tài liệu không đủ, hãy n
       'theo kinh nghiệm',
     ];
     
-    const lower = response.toLowerCase();
-    return bad.some(phrase => lower.includes(phrase));
+    const lowerResponse = response.toLowerCase();
+    return suspiciousPhrases.some(phrase => lowerResponse.includes(phrase));
+  }
+
+  private getScore(chunk: SearchResult): number {
+    if (typeof chunk.combined_score === 'number') {
+      return chunk.combined_score;
+    }
+    if (typeof chunk.similarity === 'number') {
+      return chunk.similarity;
+    }
+    return 0;
+  }
+
+  // ✅ TEST SEARCH - Debug tool
+  async testSearch(query: string): Promise<{ query: string; results: SearchResult[] }> {
+    console.log(`\n🔍 Test search: "${query}"`);
+    
+    const expandedQueries = this.expandQuery(query);
+    console.log(`✓ Expanded queries:`, expandedQueries);
+
+    let allResults: SearchResult[] = [];
+
+    for (const q of expandedQueries) {
+      const embedding = await this.embeddingService.generateEmbedding(q);
+      const results = await this.db.searchHybridChunks(embedding, q, 5);
+      allResults.push(...results);
+    }
+
+    const uniqueResults = this.deduplicateAndSort(allResults);
+
+    console.log(`\n📊 Top ${Math.min(10, uniqueResults.length)} results:`);
+    uniqueResults.slice(0, 10).forEach((r, i) => {
+      console.log(`[${i + 1}] Score: ${(this.getScore(r) * 100).toFixed(1)}%`);
+      console.log(`    Content: ${(r.parent_content ?? r.content).substring(0, 120)}...`);
+      console.log('');
+    });
+
+    return { query, results: uniqueResults };
   }
 }
