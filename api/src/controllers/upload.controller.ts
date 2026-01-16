@@ -31,12 +31,18 @@ export class UploadController {
         return res.status(400).json({ error: 'File không có nội dung text' });
       }
 
+      const metadata = this.documentService.parseMetadataFromPath(objectName);
+
       // Insert document → lấy document_id
       const documentId = await this.db.insertDocument({
         filename: objectName,
         file_path: objectName,
         file_size: buffer.length,
         content_type: 'unknown',
+        document_type: metadata.document_type,
+        entity: metadata.entity,
+        major: metadata.major,
+        source_file: metadata.source_file,
       });
 
       //  Chunk text
@@ -58,6 +64,10 @@ export class UploadController {
           content: chunkText,
           chunk_index: i,
           embedding,
+          document_type: metadata.document_type,
+          entity: metadata.entity,
+          major: metadata.major,
+          source_file: metadata.source_file,
         });
       }
 

@@ -31,11 +31,16 @@ export class RAGService {
       const expandedQueries = this.expandQuery(query);
       console.log(`✓ Expanded to ${expandedQueries.length} queries`);
 
+      const metadataFilters = this.extractMetadataFilters(query);
+      if (metadataFilters) {
+        console.log(`✓ Applying metadata filters:`, metadataFilters);
+      }
+
       // 3. Search với multiple queries
       let allChunks: SearchResult[] = [];
       for (const q of expandedQueries) {
         const embedding = await this.embeddingService.generateEmbedding(q);
-        const chunks = await this.db.searchSimilarChunks(embedding, 8);
+        const chunks = await this.db.searchSimilarChunks(embedding, 8, metadataFilters || undefined);
         allChunks.push(...chunks);
       }
 
@@ -62,24 +67,26 @@ export class RAGService {
       }
 
       // 7. Lấy chunks tốt
-      const goodChunks = uniqueChunks.filter(c => 
+      const goodChunks = uniqueChunks.filter(c =>
         c.similarity >= thresholds.minChunk
-      ).slice(0, 10); // Lấy tối đa 10 chunks tốt nhất
+      ).slice(0, 5); // Lấy topK 3-5
 
       if (goodChunks.length === 0) {
         console.log('No good chunks');
         return this.getNoContextResponse(query);
       }
 
+      const enrichedChunks = this.includeNeighborChunks(goodChunks, uniqueChunks);
+
       // 8. Build context
-      const context = this.buildContext(goodChunks);
+      const context = this.buildContext(enrichedChunks);
 
       if (context.trim().length < 50) {
         console.log('Context too short');
         return this.getNoContextResponse(query);
       }
 
-      console.log(`✓ Context: ${context.length} chars, ${goodChunks.length} chunks`);
+      console.log(`✓ Context: ${context.length} chars, ${enrichedChunks.length} chunks`);
 
       // 9. Generate response
       const response = await this.generateResponse(
@@ -135,6 +142,12 @@ export class RAGService {
       queries.push(query.replace(/điểm/gi, 'điểm xét tuyển'));
     }
 
+    // Tín chỉ
+    if (lower.includes('tín chỉ') || lower.includes('tin chi') || lower.includes('mấy tín chỉ')) {
+      queries.push(query.replace(/mấy tín chỉ/gi, 'số tín chỉ'));
+      queries.push(query.replace(/tín chỉ/gi, 'số tín chỉ'));
+    }
+
     // Quy chế
     if (lower.includes('quy chế')) {
       queries.push('quy định học vụ');
@@ -151,7 +164,7 @@ export class RAGService {
     }
 
     // Loại trùng lặp
-    return [...new Set(queries)];
+    return [...new Set(queries)].slice(0, 4);
   }
 
   // ✅ NGƯỠNG ĐỘNG - Thích ứng theo query
@@ -171,16 +184,15 @@ export class RAGService {
     if (isSpecificQuery) {
       // Query cụ thể: yêu cầu similarity cao hơn
       return {
-        minTop: 0.50,    // Giảm từ 0.55
-        minChunk: 0.40   // Giảm từ 0.45
-      };
-    } else {
-      // Query chung chung: linh hoạt hơn
-      return {
-        minTop: 0.45,
-        minChunk: 0.35
+        minTop: 0.78,
+        minChunk: 0.62
       };
     }
+
+    return {
+      minTop: 0.72,
+      minChunk: 0.55
+    };
   }
 
   private deduplicateAndSort(chunks: SearchResult[]): SearchResult[] {
@@ -224,20 +236,7 @@ Bạn muốn biết thông tin gì?`;
 
 
   private getNoContextResponse(query: string): string {
-    return `Xin lỗi, tôi không tìm thấy thông tin đủ tin cậy về câu hỏi này trong tài liệu.
-
-Tôi có thể tư vấn về:
-• Chương trình đào tạo Công nghệ Thông tin
-• Quy chế học vụ
-• Đề cương môn học
-• Tuyển sinh đại học
-
-Bạn có thể:
-1. Đặt lại câu hỏi rõ ràng hơn
-2. Hỏi về các chủ đề cụ thể hơn
-3. Liên hệ Phòng Đào tạo: 0243 6280 280
-
-Bạn muốn hỏi về vấn đề gì khác?`;
+    return 'Không tìm thấy thông tin trong tài liệu.';
   }
 
   private buildContext(chunks: SearchResult[]): string {
@@ -246,9 +245,39 @@ Bạn muốn hỏi về vấn đề gì khác?`;
     return chunks
       .map((chunk, i) => {
         const simPercent = (chunk.similarity * 100).toFixed(0);
-        return `[Tài liệu ${i + 1} - Độ tin cậy: ${simPercent}%]\n${chunk.content}`;
+        const metadata = [
+          chunk.document_type && `loại: ${chunk.document_type}`,
+          chunk.entity && `chủ đề: ${chunk.entity}`,
+          chunk.major && `ngành: ${chunk.major}`,
+          chunk.source_file && `nguồn: ${chunk.source_file}`,
+        ].filter(Boolean).join(' | ');
+        return `[Tài liệu ${i + 1} - Độ tin cậy: ${simPercent}%${metadata ? ` | ${metadata}` : ''}]\n${chunk.content}`;
       })
       .join('\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n');
+  }
+
+  private includeNeighborChunks(primary: SearchResult[], all: SearchResult[]): SearchResult[] {
+    const byKey = new Map<string, SearchResult>();
+
+    const addChunk = (chunk: SearchResult | undefined) => {
+      if (!chunk) return;
+      const key = chunk.chunk_id;
+      if (!byKey.has(key)) {
+        byKey.set(key, chunk);
+      }
+    };
+
+    primary.forEach(addChunk);
+
+    primary.forEach(chunk => {
+      const neighbors = all.filter(candidate =>
+        candidate.source_file === chunk.source_file &&
+        Math.abs(candidate.chunk_index - chunk.chunk_index) === 1
+      );
+      neighbors.forEach(addChunk);
+    });
+
+    return Array.from(byKey.values()).sort((a, b) => b.similarity - a.similarity);
   }
 
 
@@ -269,11 +298,11 @@ NHIỆM VỤ:
 Trả lời câu hỏi dựa trên tài liệu được cung cấp một cách đầy đủ, chính xác và dễ hiểu.
 
 NGUYÊN TẮC:
-1. CHỈ sử dụng thông tin từ tài liệu
-2. KHÔNG bịa đặt hoặc suy đoán
-3. Trả lời đầy đủ, có cấu trúc (dùng bullet points)
-4. Nếu tài liệu không đủ → nói rõ phần nào có, phần nào thiếu
-5. Trích dẫn trực tiếp khi có thể
+1. Bạn CHỈ được trả lời dựa trên CONTEXT.
+2. Nếu CONTEXT không đủ thông tin, trả lời: "Không tìm thấy thông tin trong tài liệu."
+3. TUYỆT ĐỐI không suy diễn hoặc bịa đặt.
+4. Bạn được phép diễn giải nếu nội dung trong CONTEXT tương đương về mặt ý nghĩa.
+5. Luôn trích dẫn câu liên quan; nếu không trích dẫn được thì trả lời "Không tìm thấy thông tin trong tài liệu."
 
 ĐỘ TIN CẬY: ${confidence} (${(topSimilarity * 100).toFixed(0)}%)`;
 
@@ -286,7 +315,10 @@ ${context}
 
 CÂU HỎI: ${query}
 
-Hãy trả lời dựa trên tài liệu. Nếu tài liệu không đủ, hãy nói rõ.`;
+YÊU CẦU TRẢ LỜI:
+- Trả lời ngắn gọn, đúng trọng tâm.
+- Kèm trích dẫn câu liên quan trong CONTEXT.
+- Nếu không thể trích dẫn, trả lời đúng nguyên văn: "Không tìm thấy thông tin trong tài liệu."`;
 
     const res = await this.ollama.chat({
       model: this.ollamaModel,
@@ -323,6 +355,37 @@ Hãy trả lời dựa trên tài liệu. Nếu tài liệu không đủ, hãy n
     return response;
   }
 
+  private extractMetadataFilters(query: string): { document_type?: string; entity?: string; major?: string } | null {
+    const lower = query.toLowerCase();
+    const filters: { document_type?: string; entity?: string; major?: string } = {};
+
+    if (lower.includes('quy định') || lower.includes('quy che') || lower.includes('quy chế')) {
+      filters.document_type = 'quy_dinh';
+    }
+
+    if (lower.includes('đề cương') || lower.includes('de cuong') || lower.includes('syllabus')) {
+      filters.document_type = 'de_cuong';
+    }
+
+    if (lower.includes('chương trình') || lower.includes('chuong trinh') || lower.includes('curriculum')) {
+      filters.document_type = 'chuong_trinh';
+    }
+
+    if (lower.includes('chuyên đề thực tập') || lower.includes('chuyen de thuc tap')) {
+      filters.entity = 'chuyen_de_thuc_tap';
+    }
+
+    if (/(cntt|cong nghe thong tin|công nghệ thông tin|it)/i.test(query)) {
+      filters.major = 'CNTT';
+    }
+
+    if (!filters.document_type && !filters.entity && !filters.major) {
+      return null;
+    }
+
+    return filters;
+  }
+
 
   // HALLUCINATION DETECTION
   private hasHallucination(response: string): boolean {
@@ -346,12 +409,13 @@ Hãy trả lời dựa trên tài liệu. Nếu tài liệu không đủ, hãy n
     
     const expandedQueries = this.expandQuery(query);
     console.log(`✓ Expanded queries:`, expandedQueries);
+    const metadataFilters = this.extractMetadataFilters(query);
 
     let allResults: SearchResult[] = [];
 
     for (const q of expandedQueries) {
       const embedding = await this.embeddingService.generateEmbedding(q);
-      const results = await this.db.searchSimilarChunks(embedding, 5);
+      const results = await this.db.searchSimilarChunks(embedding, 5, metadataFilters || undefined);
       allResults.push(...results);
     }
 
