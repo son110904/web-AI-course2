@@ -63,15 +63,21 @@ export class IngestController {
               }
 
               // Chunk text
-              const chunks = this.documentService.chunkText(text, 300, 50);
+              const chunks = this.documentService.chunkText(text);
               console.log(`  ✓ Created ${chunks.length} chunks`);
+
+              const metadata = this.documentService.parseMetadataFromPath(objectName);
 
               // Insert document vào DB để lấy UUID
               const documentId = await this.db.insertDocument({
                 filename: objectName.split('/').pop() || objectName,
                 file_path: objectName,
                 file_size: buffer.length,
-                content_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+                content_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                document_type: metadata.document_type,
+                entity: metadata.entity,
+                major: metadata.major,
+                source_file: metadata.source_file,
               });
 
               console.log(`  ✓ Document inserted with ID: ${documentId}`);
@@ -85,6 +91,10 @@ export class IngestController {
                   content: chunks[i],
                   chunk_index: i,
                   embedding,
+                  document_type: metadata.document_type,
+                  entity: metadata.entity,
+                  major: metadata.major,
+                  source_file: metadata.source_file,
                 });
 
                 totalChunks++;

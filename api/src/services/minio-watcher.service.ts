@@ -103,12 +103,17 @@ export class MinIOWatcherService {
 
         // 3. Save document
         const filename = objectName.split('/').pop()!;
+        const metadata = this.documentService.parseMetadataFromPath(objectName);
         const documentId = await this.db.insertDocument({
           filename,
           file_path: objectName,
           file_size: buffer.length,
           content_type:
             'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          document_type: metadata.document_type,
+          entity: metadata.entity,
+          major: metadata.major,
+          source_file: metadata.source_file,
         });
 
         // 4. Chunk & Embed
@@ -123,6 +128,10 @@ export class MinIOWatcherService {
             content: chunks[i],
             chunk_index: i,
             embedding,
+            document_type: metadata.document_type,
+            entity: metadata.entity,
+            major: metadata.major,
+            source_file: metadata.source_file,
           });
           
           // Log progress mỗi 10 chunks
