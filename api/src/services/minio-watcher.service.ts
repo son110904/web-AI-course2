@@ -83,9 +83,8 @@ export class MinIOWatcherService {
     }
   }
 
-  /* =====================================================
-   * INGEST FILES
-   * ===================================================== */
+  /* 
+   * INGEST FILES */
   private async ingestFiles(files: string[]): Promise<void> {
     for (const objectName of files) {
       try {
@@ -113,7 +112,7 @@ export class MinIOWatcherService {
         });
 
         // 4. Chunk & Embed
-        const chunks = this.documentService.chunkText(text, 500, 100);
+        const chunks = this.documentService.chunkText(text);
         console.log(`  ✓ Created ${chunks.length} chunks`);
         
         for (let i = 0; i < chunks.length; i++) {
@@ -161,5 +160,4 @@ export class MinIOWatcherService {
       console.log('✓ Database is up to date');
     }
   }
-}
 }

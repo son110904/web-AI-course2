@@ -188,16 +188,16 @@ export class RAGService {
 
     chunks.forEach(chunk => {
       const content = chunk.content.trim();
-      const existing = uniqueMap.get(content);
+      const existing = map.get(content);
       
       // Giữ chunk có similarity cao nhất
       if (!existing || chunk.similarity > existing.similarity) {
-        uniqueMap.set(content, chunk);
+        map.set(content, chunk);
       }
     });
 
     // Sort theo similarity giảm dần
-    return Array.from(uniqueMap.values())
+    return Array.from(map.values())
       .sort((a, b) => b.similarity - a.similarity);
   }
 
@@ -337,7 +337,7 @@ Hãy trả lời dựa trên tài liệu. Nếu tài liệu không đủ, hãy n
     ];
     
     const lowerResponse = response.toLowerCase();
-    return suspiciousPhrases.some(phrase => lowerResponse.includes(phrase));
+    return bad.some(phrase => lowerResponse.includes(phrase));
   }
 
   // ✅ TEST SEARCH - Debug tool
