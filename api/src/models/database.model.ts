@@ -17,7 +17,7 @@ export interface SearchResult {
   chunk_index: number;
 }
 
-const VECTOR_DIM = 384; 
+const VECTOR_DIM = 768; 
 
 export class DatabaseModel {
   private pool: Pool;

@@ -7,7 +7,7 @@ export class EmbeddingService {
   private modelName: string;
   private initialized: boolean = false;
 
-  constructor(modelName: string = 'Xenova/paraphrase-multilingual-MiniLM-L12-v2') {
+  constructor(modelName: string = 'Xenova/paraphrase-multilingual-mpnet-base-v2') {
     this.modelName = modelName;
   }
 

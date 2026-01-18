@@ -39,7 +39,7 @@ export async function createApp(): Promise<Express> {
   const minio = new MinIOModel();
   
   const embeddingService = new EmbeddingService(
-    process.env.EMBEDDING_MODEL || 'Xenova/all-MiniLM-L6-v2'
+    process.env.EMBEDDING_MODEL
   );
   await embeddingService.initialize();
   
