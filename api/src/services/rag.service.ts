@@ -18,6 +18,9 @@ export class RAGService {
     try {
       const userMessage = messages[messages.length - 1];
       const query = userMessage.content;
+      const conversationContext = this.buildConversationContext(
+        messages.slice(0, -1)
+      );
 
       console.log(`\n🔍 User query: "${query}"`);
 
@@ -62,17 +65,17 @@ export class RAGService {
       const uniqueChunks = this.deduplicateAndSort(allChunks);
       console.log(`✓ Found ${uniqueChunks.length} unique chunks`);
 
-      if (uniqueChunks.length === 0) {
+      if (uniqueChunks.length === 0 && !conversationContext) {
         return this.getNoContextResponse(query);
       }
 
       const thresholds = this.getAdaptiveThresholds(query);
-      const topSimilarity = uniqueChunks[0].similarity;
+      const topSimilarity = uniqueChunks[0]?.similarity ?? 0;
 
       console.log(`✓ Top similarity: ${(topSimilarity * 100).toFixed(1)}%`);
       console.log(`✓ Threshold: ${(thresholds.minTop * 100).toFixed(1)}%`);
 
-      if (topSimilarity < thresholds.minTop) {
+      if (topSimilarity < thresholds.minTop && !conversationContext) {
         return this.getNoContextResponse(query);
       }
 
@@ -80,7 +83,7 @@ export class RAGService {
         .filter(c => c.similarity >= thresholds.minChunk)
         .slice(0, 5);
 
-      if (goodChunks.length === 0) {
+      if (goodChunks.length === 0 && !conversationContext) {
         return this.getNoContextResponse(query);
       }
 
@@ -91,13 +94,14 @@ export class RAGService {
 
       const context = this.buildContext(enrichedChunks);
 
-      if (context.length < 50) {
+      if (context.length < 50 && !conversationContext) {
         return this.getNoContextResponse(query);
       }
 
       return await this.generateResponse(
         query,
         context,
+        conversationContext,
         messages,
         topSimilarity,
         isProcess
@@ -197,6 +201,7 @@ export class RAGService {
   private async generateResponse(
     query: string,
     context: string,
+    conversationContext: string,
     history: ChatMessage[],
     topSimilarity: number,
     isProcess: boolean
@@ -206,7 +211,7 @@ export class RAGService {
 Bạn là trợ lý AI của Đại học Kinh tế Quốc dân.
 
 NGUYÊN TẮC:
-1. Chỉ sử dụng thông tin trong CONTEXT.
+1. Chỉ sử dụng thông tin trong CONTEXT hoặc THÔNG TIN NGƯỜI DÙNG CUNG CẤP.
 2. Không suy diễn, không bịa đặt.
 3. Nếu không đủ thông tin, trả lời:
    "Không tìm thấy thông tin trong tài liệu."
@@ -219,8 +224,11 @@ Nếu câu hỏi là QUY TRÌNH / CÁC BƯỚC:
 `;
 
     const userPrompt = `
+THÔNG TIN NGƯỜI DÙNG CUNG CẤP:
+${conversationContext || 'Không có'}
+
 TÀI LIỆU:
-${context}
+${context || 'Không có'}
 
 CÂU HỎI:
 ${query}
@@ -303,5 +311,13 @@ ${query}
 
   private getNoContextResponse(_: string): string {
     return 'Không tìm thấy thông tin trong tài liệu.';
+  }
+
+  private buildConversationContext(history: ChatMessage[]): string {
+    const recent = history
+      .filter(message => message.role === 'user' && message.content.trim())
+      .slice(-4)
+      .map((message, index) => `Người dùng ${index + 1}: ${message.content}`);
+    return recent.join('\n');
   }
 }
