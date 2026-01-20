@@ -14,294 +14,200 @@ export class RAGService {
     this.ollama = new Ollama({ host: ollamaHost });
   }
 
+  /* =====================================================
+     MAIN ENTRY
+  ====================================================== */
   async chat(messages: ChatMessage[]): Promise<string> {
-    try {
-      const userMessage = messages[messages.length - 1];
-      const query = userMessage.content;
+    /* ========= 1. SANITIZE INPUT ========= */
+    const userMessage = messages.filter(m => m.role === 'user').pop();
+    if (!userMessage) {
+      return 'Không có câu hỏi hợp lệ.';
+    }
 
-      console.log(`\n🔍 User query: "${query}"`);
+    const query = userMessage.content.trim();
+    console.log('\n🔥 RAGService.chat()');
+    console.log('🔍 Query:', query);
 
-      if (this.isGreeting(query)) {
-        return this.getGreetingResponse();
-      }
+    /* ========= 2. EMBEDDING ========= */
+    const embedding = await this.embeddingService.generateEmbedding(query);
+    console.log('Embedding length:', embedding.length);
 
-      const isProcess = this.isProcessQuery(query);
-      if (isProcess) {
-        console.log('✓ Detected PROCESS query');
-      }
+    /* ========= 3. VECTOR RETRIEVAL ========= */
+    const rawChunks = await this.db.searchSimilarChunks(
+      embedding,
+      15 // TOP-K đủ lớn để tránh CTĐT đè
+    );
 
-      const expandedQueries = this.expandQuery(query);
-      console.log('✓ Expanded queries:', expandedQueries);
+    console.log('Chunks retrieved:', rawChunks.length);
 
-      const metadataFilters = this.extractMetadataFilters(query);
-      if (metadataFilters) {
-        console.log('✓ Metadata filters:', metadataFilters);
-      }
+    rawChunks.forEach((c, i) => {
+      console.log(`--- Chunk ${i + 1} ---`);
+      console.log('Similarity:', c.similarity.toFixed(3));
+      console.log('Source:', c.source_file);
+      console.log('Preview:', c.content.slice(0, 150));
+    });
 
-      let allChunks: SearchResult[] = [];
+    if (rawChunks.length === 0) {
+      return this.noContext();
+    }
 
-      for (const q of expandedQueries) {
-        const embedding = await this.embeddingService.generateEmbedding(q);
-        let chunks = await this.db.searchSimilarChunks(
-          embedding,
-          8,
-          metadataFilters || undefined
-        );
+    /* ========= 4. RE-RANK (DOCUMENT-AWARE) ========= */
+    const reranked = this.rerankChunks(rawChunks, query);
 
-        // Relax filter nếu bị quá chặt
-        if (chunks.length === 0 && metadataFilters?.document_type) {
-          console.log('⚠️ Relaxing metadata filter...');
-          chunks = await this.db.searchSimilarChunks(embedding, 8, {
-            major: metadataFilters.major,
-          });
+    console.log('\n🔁 After re-rank');
+    reranked.slice(0, 5).forEach((c, i) => {
+      console.log(
+        `#${i + 1} | ${(c.similarity * 100).toFixed(1)}% | ${c.source_file}`
+      );
+    });
+
+    /* ========= 5. THRESHOLD ========= */
+    const MIN_TOP = 0.45;
+    const MIN_CHUNK = 0.4;
+
+    const top = reranked[0];
+    console.log('Top similarity:', top.similarity);
+
+    if (top.similarity < MIN_TOP) {
+      console.log('❌ Top similarity below threshold');
+      return this.noContext();
+    }
+
+    const selectedChunks = reranked
+      .filter(c => c.similarity >= MIN_CHUNK)
+      .slice(0, 4);
+
+    if (selectedChunks.length === 0) {
+      return this.noContext();
+    }
+
+    /* ========= 6. BUILD CONTEXT ========= */
+    const context = this.buildContext(selectedChunks);
+
+    console.log('\n🧠 FINAL CONTEXT');
+    console.log(context);
+    console.log('Context length:', context.length);
+
+    if (context.length < 50) {
+      return this.noContext();
+    }
+
+    /* ========= 7. LLM GENERATION ========= */
+    return await this.generateResponse(query, context);
+  }
+
+  /* =====================================================
+     RE-RANKING (CORE FIX)
+     - Ưu tiên tài liệu chuyên biệt
+     - Giảm CTĐT tổng quát
+     - Boost theo trùng tên tài liệu
+  ====================================================== */
+  private rerankChunks(
+    chunks: SearchResult[],
+    query: string
+  ): SearchResult[] {
+    const q = query.toLowerCase();
+
+    return chunks
+      .map(c => {
+        let bonus = 0;
+        const source = c.source_file.toLowerCase();
+
+        // 1️⃣ Ưu tiên đề cương / học phần / chuyên đề
+        if (
+          source.includes('công nghệ') ||
+          source.includes('lập trình') ||
+          source.includes('chuyên đề') ||
+          source.includes('học phần')
+        ) {
+          bonus += 0.12;
         }
 
-        allChunks.push(...chunks);
-      }
+        // 2️⃣ Giảm CTĐT (rất quan trọng)
+        if (
+          source.includes('ctđt') ||
+          source.includes('chương trình đào tạo')
+        ) {
+          bonus -= 0.12;
+        }
 
-      const uniqueChunks = this.deduplicateAndSort(allChunks);
-      console.log(`✓ Found ${uniqueChunks.length} unique chunks`);
+        // 3️⃣ Boost nếu query nhắc đến tên tài liệu
+        const normalizedSource = source.replace('.docx', '');
+        if (q.includes(normalizedSource)) {
+          bonus += 0.2;
+        }
 
-      if (uniqueChunks.length === 0) {
-        return this.getNoContextResponse(query);
-      }
-
-      const thresholds = this.getAdaptiveThresholds(query);
-      const topSimilarity = uniqueChunks[0].similarity;
-
-      console.log(`✓ Top similarity: ${(topSimilarity * 100).toFixed(1)}%`);
-      console.log(`✓ Threshold: ${(thresholds.minTop * 100).toFixed(1)}%`);
-
-      if (topSimilarity < thresholds.minTop) {
-        return this.getNoContextResponse(query);
-      }
-
-      const goodChunks = uniqueChunks
-        .filter(c => c.similarity >= thresholds.minChunk)
-        .slice(0, 5);
-
-      if (goodChunks.length === 0) {
-        return this.getNoContextResponse(query);
-      }
-
-      const enrichedChunks = this.includeNeighborChunks(
-        goodChunks,
-        uniqueChunks
-      );
-
-      const context = this.buildContext(enrichedChunks);
-
-      if (context.length < 50) {
-        return this.getNoContextResponse(query);
-      }
-
-      return await this.generateResponse(
-        query,
-        context,
-        messages,
-        topSimilarity,
-        isProcess
-      );
-
-    } catch (err: any) {
-      console.error('❌ RAG error:', err.message);
-      throw err;
-    }
+        return {
+          ...c,
+          similarity: Math.min(c.similarity + bonus, 1)
+        };
+      })
+      .sort((a, b) => b.similarity - a.similarity);
   }
 
-  /* =========================
-     INTENT DETECTION
-  ========================== */
-  private isProcessQuery(query: string): boolean {
-    const lower = query.toLowerCase();
-    return [
-      'quy trình',
-      'các bước',
-      'trình tự',
-      'làm như thế nào',
-      'hướng dẫn',
-      'thực hiện'
-    ].some(k => lower.includes(k));
+  /* =====================================================
+     CONTEXT BUILDER
+  ====================================================== */
+  private buildContext(chunks: SearchResult[]): string {
+    return chunks
+      .map(
+        (c, i) =>
+          `[Tài liệu ${i + 1} | ${(c.similarity * 100).toFixed(0)}% | ${c.source_file}]
+${c.content}`
+      )
+      .join('\n\n');
   }
 
-  /* =========================
-     QUERY EXPANSION (FIXED)
-  ========================== */
-  private expandQuery(query: string): string[] {
-    const queries = [query];
-    const lower = query.toLowerCase();
-    const isProcess = this.isProcessQuery(query);
-
-    if (lower.includes('khóa luận') || lower.includes('khoa luan')) {
-      if (isProcess) {
-        queries.push('quy trình thực hiện khóa luận tốt nghiệp');
-        queries.push('các bước làm khóa luận tốt nghiệp');
-        queries.push('hướng dẫn thực hiện khóa luận');
-      } else {
-        queries.push('điều kiện làm khóa luận tốt nghiệp');
-        queries.push('quy định khóa luận tốt nghiệp');
-      }
-    }
-
-    if (lower.includes('đề cương')) {
-      queries.push('đề cương khóa luận');
-    }
-
-    if (/(cntt|công nghệ thông tin|it)/i.test(query)) {
-      queries.push('khóa luận tốt nghiệp CNTT');
-    }
-
-    return [...new Set(queries)].slice(0, 4);
-  }
-
-  /* =========================
-     THRESHOLD (FIXED)
-  ========================== */
-  private getAdaptiveThresholds(query: string): {
-    minTop: number;
-    minChunk: number;
-  } {
-    if (this.isProcessQuery(query)) {
-      return { minTop: 0.62, minChunk: 0.5 };
-    }
-    return { minTop: 0.72, minChunk: 0.55 };
-  }
-
-  /* =========================
-     METADATA FILTER (FIXED)
-  ========================== */
-  private extractMetadataFilters(query: string): {
-    document_type?: string;
-    major?: string;
-  } | null {
-    const lower = query.toLowerCase();
-    const filters: any = {};
-
-    const isProcess = this.isProcessQuery(query);
-
-    if (!isProcess && lower.includes('quy định')) {
-      filters.document_type = 'quy_dinh';
-    }
-
-    if (/(cntt|công nghệ thông tin|it)/i.test(query)) {
-      filters.major = 'CNTT';
-    }
-
-    if (Object.keys(filters).length === 0) return null;
-    return filters;
-  }
-
-  /* =========================
-     RESPONSE GENERATION
-  ========================== */
+  /* =====================================================
+     LLM RESPONSE
+  ====================================================== */
   private async generateResponse(
     query: string,
-    context: string,
-    history: ChatMessage[],
-    topSimilarity: number,
-    isProcess: boolean
+    context: string
   ): Promise<string> {
-
     const systemPrompt = `
 Bạn là trợ lý AI của Đại học Kinh tế Quốc dân.
 
 NGUYÊN TẮC:
-1. Chỉ sử dụng thông tin trong CONTEXT.
-2. Không suy diễn, không bịa đặt.
-3. Nếu không đủ thông tin, trả lời:
-   "Không tìm thấy thông tin trong tài liệu."
-
-${isProcess ? `
-Nếu câu hỏi là QUY TRÌNH / CÁC BƯỚC:
-- Trả lời dạng danh sách đánh số (1,2,3…)
-- Mỗi bước ngắn gọn
-` : ''}
-`;
-
-    const userPrompt = `
-TÀI LIỆU:
-${context}
-
-CÂU HỎI:
-${query}
+- Chỉ sử dụng thông tin trong TÀI LIỆU.
+- Không suy diễn, không bịa.
+- Nếu không đủ thông tin, trả lời: "Không tìm thấy thông tin trong tài liệu."
 `;
 
     const res = await this.ollama.chat({
       model: this.ollamaModel,
       messages: [
         { role: 'system', content: systemPrompt },
-        ...history.slice(-2, -1),
-        { role: 'user', content: userPrompt },
+        {
+          role: 'user',
+          content: `TÀI LIỆU:\n${context}\n\nCÂU HỎI:\n${query}`
+        }
       ],
       stream: false,
       options: {
         temperature: 0.2,
         top_p: 0.9,
-        num_ctx: 4096,
-      },
+        num_ctx: 4096
+      }
     });
 
     return res.message.content.trim();
   }
 
-  /* =========================
-     HELPERS
-  ========================== */
-  private deduplicateAndSort(chunks: SearchResult[]): SearchResult[] {
-    const map = new Map<string, SearchResult>();
-    for (const c of chunks) {
-      if (!c?.content) continue;
-      const key = c.content.trim();
-      if (!map.has(key) || c.similarity > map.get(key)!.similarity) {
-        map.set(key, c);
-      }
-    }
-    return [...map.values()].sort((a, b) => b.similarity - a.similarity);
-  }
-
-  private includeNeighborChunks(
-    primary: SearchResult[],
-    all: SearchResult[]
-  ): SearchResult[] {
-    const map = new Map<string, SearchResult>();
-    const add = (c?: SearchResult) => {
-      if (c && c.chunk_id && !map.has(c.chunk_id)) {
-        map.set(c.chunk_id, c);
-      }
-    };
-    primary.forEach(add);
-    primary.forEach(c => {
-      all
-        .filter(
-          x =>
-            x.source_file === c.source_file &&
-            Math.abs(x.chunk_index - c.chunk_index) === 1
-        )
-        .forEach(add);
-    });
-    return [...map.values()];
-  }
-
-  private buildContext(chunks: SearchResult[]): string {
-    return chunks
-      .map(
-        (c, i) =>
-          `[Tài liệu ${i + 1} | ${(c.similarity * 100).toFixed(0)}%]\n${c.content}`
-      )
-      .join('\n\n');
-  }
-
-  private isGreeting(query: string): boolean {
-    return ['xin chào', 'chào', 'hello', 'hi'].includes(
-      query.toLowerCase().trim()
-    );
-  }
-
-  private getGreetingResponse(): string {
-    return 'Xin chào! Tôi có thể hỗ trợ bạn về chương trình đào tạo, quy chế, và khóa luận tốt nghiệp.';
-  }
-
-  private getNoContextResponse(_: string): string {
+  /* =====================================================
+     FALLBACK
+  ====================================================== */
+  private noContext(): string {
     return 'Không tìm thấy thông tin trong tài liệu.';
   }
+
+  private buildConversationContext(history: ChatMessage[]): string {
+    const recent = history
+      .filter(message => message.role === 'user' && message.content.trim())
+      .slice(-4)
+      .map((message, index) => `Người dùng ${index + 1}: ${message.content}`);
+    return recent.join('\n');
+  }
 }
+
+

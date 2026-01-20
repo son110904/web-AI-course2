@@ -3,255 +3,113 @@ import mammoth from 'mammoth';
 import * as XLSX from 'xlsx';
 
 export class DocumentService {
-  constructor() {}
-
   async extractText(buffer: Buffer, filename: string): Promise<string> {
     const ext = filename.split('.').pop()?.toLowerCase();
+
+    let raw = '';
     switch (ext) {
       case 'pdf':
-        return this.cleanText(await this.extractPdf(buffer));
+        raw = (await pdfParse(buffer)).text || '';
+        break;
       case 'docx':
-        return this.cleanText(await this.extractDocx(buffer));
+        raw = (await mammoth.extractRawText({ buffer })).value || '';
+        break;
       case 'txt':
-        return this.cleanText(buffer.toString('utf-8'));
+        raw = buffer.toString('utf-8');
+        break;
       case 'xlsx':
       case 'xls':
-        return this.cleanText(this.extractExcel(buffer));
+        raw = this.extractExcel(buffer);
+        break;
       default:
-        throw new Error(`Unsupported file type: ${ext}`); // ✅ FIXED: Thêm dấu ngoặc ()
+        throw new Error(`Unsupported file type: ${ext}`);
     }
-  }
 
-  private async extractPdf(buffer: Buffer): Promise<string> {
-    const data = await pdfParse(buffer);
-    return data.text || '';
-  }
-
-  private async extractDocx(buffer: Buffer): Promise<string> {
-    const result = await mammoth.extractRawText({ buffer });
-    return result.value;
+    return this.cleanText(raw);
   }
 
   private extractExcel(buffer: Buffer): string {
     const workbook = XLSX.read(buffer, { type: 'buffer' });
     return workbook.SheetNames
-      .map((name) =>
-        XLSX.utils.sheet_to_csv(workbook.Sheets[name])
-      )
+      .map(name => XLSX.utils.sheet_to_csv(workbook.Sheets[name]))
       .join('\n');
   }
 
-  public cleanText(text: string): string {
+  /* =========================
+     TEXT CLEANING (NEUTRAL)
+  ========================== */
+  cleanText(text: string): string {
     if (!text) return '';
 
-    const normalizedNewlines = text.replace(/\r\n/g, '\n');
-    const cleanedLines = normalizedNewlines
-      .split('\n')
-      .map(line => line.replace(/\t/g, ' ').replace(/[ ]{2,}/g, ' ').trimEnd());
-
-    const merged = cleanedLines.join('\n').trim();
-    return this.normalizeLabelValuePairs(merged);
+    return text
+      .replace(/\r\n/g, '\n')
+      .replace(/\t/g, ' ')
+      .replace(/[ ]{2,}/g, ' ')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
   }
 
-  public parseMetadataFromPath(filePath: string): {
-    document_type: string;
-    entity: string;
-    major: string;
-    source_file: string;
-  } {
-    const normalizedPath = filePath.replace(/\\/g, '/');
-    const filename = normalizedPath.split('/').pop() || normalizedPath;
-    const lower = normalizedPath.toLowerCase();
-
-    const documentType = this.normalizeDocumentType(lower);
-    const major = this.normalizeMajor(lower);
-    const entity = this.normalizeEntity(filename);
+  /* =========================
+     METADATA – GIỮ TRUNG LẬP
+  ========================== */
+  parseMetadataFromPath(filePath: string) {
+    const normalized = filePath.replace(/\\/g, '/');
+    const filename = normalized.split('/').pop() || normalized;
+    const lower = filename.toLowerCase();
 
     return {
-      document_type: documentType,
-      entity,
-      major,
+      document_type: this.detectDocumentType(lower),
+      entity: this.detectEntity(lower),
+      major: this.detectMajor(lower),
       source_file: filename,
     };
   }
 
-  // Chunk theo ngữ nghĩa: heading -> đoạn -> fallback chunk size
-  chunkText(text: string, chunkSize: number = 800, overlapRatio: number = 0.4): string[] {
-    if (!text) return [];
-
-    const sections = this.splitByHeadings(text);
-    const chunks: string[] = [];
-    const overlap = Math.max(1, Math.floor(chunkSize * overlapRatio));
-
-    for (const section of sections) {
-      const paragraphs = section
-        .split(/\n\s*\n/)
-        .map(p => p.trim())
-        .filter(Boolean);
-
-      let buffer = '';
-
-      for (const paragraph of paragraphs) {
-        if (buffer.length === 0) {
-          buffer = paragraph;
-          continue;
-        }
-
-        if ((buffer + '\n\n' + paragraph).length <= chunkSize) {
-          buffer = `${buffer}\n\n${paragraph}`;
-        } else {
-          chunks.push(buffer.trim());
-          buffer = paragraph;
-        }
-      }
-
-      if (buffer.trim()) {
-        chunks.push(buffer.trim());
-      }
-    }
-
-    return this.enforceChunkSize(chunks, chunkSize, overlap);
+  private detectDocumentType(name: string): string {
+    if (name.includes('chuong_trinh') || name.includes('ctdt')) return 'chuong_trinh';
+    if (name.includes('de_cuong') || name.includes('syllabus')) return 'de_cuong';
+    if (name.includes('quy_dinh') || name.includes('regulation')) return 'quy_dinh';
+    return 'tai_lieu';
   }
 
-  // 🐛 FIX: Thêm phương thức splitByHeadings nếu cần sử dụng
-  private splitByHeadings(text: string): string[] {
-    // Tách văn bản theo các tiêu đề (heading)
-    // Phát hiện các pattern như: "1.", "1.1", "Chương 1", etc.
-    const headingPatterns = [
-      /^\d+\.\s+.+$/gm,           // "1. Tiêu đề"
-      /^\d+\.\d+\s+.+$/gm,        // "1.1 Tiêu đề"
-      /^[A-Z][^\n]{10,80}$/gm,    // Dòng chữ in hoa ngắn
-      /^Chương\s+\d+/gm,          // "Chương 1"
-      /^Phần\s+\d+/gm,            // "Phần 1"
-    ];
-
-    const sections: string[] = [];
-    let currentSection = '';
-    const lines = text.split('\n');
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-      const isHeading = headingPatterns.some(pattern =>
-        pattern.test(trimmed)
-      );
-
-      if (isHeading && currentSection.length > 100) {
-        sections.push(currentSection.trim());
-        currentSection = trimmed + '\n';
-      } else {
-        currentSection += line + '\n';
-      }
-    }
-
-    if (currentSection.trim()) {
-      sections.push(currentSection.trim());
-    }
-
-    return sections.filter(Boolean);
-  }
-
-  // Phương thức kết hợp cả hai cách: chia theo heading và theo size
-  chunkTextAdvanced(text: string, chunkSize: number = 800, overlap: number = 320): string[] {
-    if (!text) return [];
-
-    // 1. Chia theo headings trước
-    const sections = this.splitByHeadings(text);
-    
-    // 2. Chia mỗi section thành chunks nhỏ hơn nếu cần
-    const allChunks: string[] = [];
-    
-    for (const section of sections) {
-      if (section.length <= chunkSize) {
-        allChunks.push(section);
-      } else {
-        // Section quá dài -> chia nhỏ
-        let start = 0;
-        while (start < section.length) {
-          const end = Math.min(start + chunkSize, section.length);
-          const chunk = section.slice(start, end).trim();
-          
-          if (chunk) {
-            allChunks.push(chunk);
-          }
-          
-          start += chunkSize - overlap;
-        }
-      }
-    }
-
-    return allChunks.filter(Boolean);
-  }
-
-  private normalizeLabelValuePairs(text: string): string {
-    return text.replace(
-      /((?:[\p{L}\p{N}]+\s*\n)+[\p{L}\p{N}]+)\s*\n*:\s*\n*([^\n]+)/gu,
-      (match, labelBlock: string, value: string) => {
-        const label = labelBlock
-          .split('\n')
-          .map(part => part.trim())
-          .filter(Boolean)
-          .join(' ');
-        return `${label}: ${value.trim()}`;
-      }
-    );
-  }
-
-  private normalizeDocumentType(path: string): string {
-    if (path.includes('relegation') || path.includes('quy_dinh') || path.includes('quy-dinh') || path.includes('regulation')) {
-      return 'quy_dinh';
-    }
-    if (path.includes('syllabus') || path.includes('de_cuong') || path.includes('đề cương')) {
-      return 'de_cuong';
-    }
-    if (path.includes('curriculum') || path.includes('chuong_trinh') || path.includes('chương trình')) {
-      return 'chuong_trinh';
-    }
-    return 'khac';
-  }
-
-  private normalizeMajor(path: string): string {
-    if (/(cntt|cong nghe thong tin|công nghệ thông tin|it|computer science)/i.test(path)) {
-      return 'CNTT';
-    }
-    return 'KHAC';
-  }
-
-  private normalizeEntity(filename: string): string {
-    const base = filename.replace(/\.[^.]+$/, '');
-    const normalized = base
+  private detectEntity(name: string): string {
+    return name
+      .replace(/\.[^.]+$/, '')
       .normalize('NFD')
       .replace(/[\u0300-\u036f]/g, '')
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '_')
       .replace(/^_+|_+$/g, '');
-
-    if (normalized.includes('chuyen_de_thuc_tap') || normalized.includes('chuyen_de') || normalized.includes('thuc_tap')) {
-      return 'chuyen_de_thuc_tap';
-    }
-
-    return normalized || 'unknown';
   }
 
-  private enforceChunkSize(chunks: string[], chunkSize: number, overlap: number): string[] {
-    const finalChunks: string[] = [];
+  private detectMajor(name: string): string {
+    if (/khoa_hoc_may_tinh|computer_science|khmt/.test(name)) return 'KHMT';
+    if (/cong_nghe_thong_tin|cntt|information_technology/.test(name)) return 'CNTT';
+    return 'KHAC';
+  }
 
-    for (const chunk of chunks) {
-      if (chunk.length <= chunkSize) {
-        finalChunks.push(chunk);
-        continue;
-      }
+  /* =========================
+     CHUNKING – PHẲNG, CÔNG BẰNG
+  ========================== */
+  chunkText(
+    text: string,
+    chunkSize = 700,
+    overlap = 200
+  ): string[] {
+    if (!text) return [];
 
-      let start = 0;
-      while (start < chunk.length) {
-        const end = Math.min(start + chunkSize, chunk.length);
-        const slice = chunk.slice(start, end).trim();
-        if (slice) {
-          finalChunks.push(slice);
-        }
-        start += chunkSize - overlap;
+    const chunks: string[] = [];
+    let start = 0;
+
+    while (start < text.length) {
+      const end = Math.min(start + chunkSize, text.length);
+      const slice = text.slice(start, end).trim();
+      if (slice.length > 50) {
+        chunks.push(slice);
       }
+      start += chunkSize - overlap;
     }
 
-    return finalChunks.filter(Boolean);
+    return chunks;
   }
 }

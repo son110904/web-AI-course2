@@ -4,50 +4,65 @@ env.allowLocalModels = false;
 
 export class EmbeddingService {
   private extractor: any;
-  private modelName: string;
-  private initialized: boolean = false;
+  private initialized = false;
 
-  constructor(modelName: string = 'Xenova/paraphrase-multilingual-mpnet-base-v2') {
-    this.modelName = modelName;
-  }
+  constructor(
+    private modelName: string = 'Xenova/paraphrase-multilingual-mpnet-base-v2'
+  ) { }
 
+  /* =========================
+     INIT
+  ========================== */
   async initialize(): Promise<void> {
     if (this.initialized) return;
 
-    try {
-      console.log('⏳ Loading embedding model...');
-      this.extractor = await pipeline('feature-extraction', this.modelName);
-      this.initialized = true;
-      console.log('✓ Embedding model loaded');
-    } catch (error) {
-      console.error('✗ Failed to load model:', error);
-      throw error;
-    }
+    console.log('⏳ Loading embedding model:', this.modelName);
+    this.extractor = await pipeline('feature-extraction', this.modelName);
+    this.initialized = true;
+    console.log('✓ Embedding model loaded');
   }
 
+  /* =========================
+     SINGLE EMBEDDING
+  ========================== */
   async generateEmbedding(text: string): Promise<number[]> {
     if (!this.initialized) {
       await this.initialize();
     }
 
-    try {
-      const output = await this.extractor(text, {
-        pooling: 'mean',
-        normalize: true,
-      });
-      return Array.from(output.data);
-    } catch (error) {
-      console.error('✗ Embedding error:', error);
-      throw error;
-    }
+    const clean = this.preprocess(text);
+
+    const output = await this.extractor(clean, {
+      pooling: 'mean',
+      normalize: false, // ❗ QUAN TRỌNG
+      truncation: true,
+      max_length: 512,
+    });
+
+    return Array.from(output.data as Float32Array);
   }
 
+  /* =========================
+     BATCH
+  ========================== */
   async generateBatchEmbeddings(texts: string[]): Promise<number[][]> {
-    const embeddings: number[][] = [];
-    for (const text of texts) {
-      const embedding = await this.generateEmbedding(text);
-      embeddings.push(embedding);
+    const results: number[][] = [];
+    for (const t of texts) {
+      results.push(await this.generateEmbedding(t));
     }
-    return embeddings;
+    return results;
+  }
+
+  /* =========================
+     PREPROCESS
+  ========================== */
+  private preprocess(text: string): string {
+    return text
+      .replace(/\r\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .replace(/[•▪●–—]/g, '-')
+      .replace(/[ ]{2,}/g, ' ')
+      .trim()
+      .slice(0, 3000); // safety
   }
 }
