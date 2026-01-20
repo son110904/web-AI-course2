@@ -97,7 +97,7 @@ export class RAGService {
   }
 
   /* =====================================================
-     RE-RANKING
+     RE-RANKING (CORE FIX)
      - Ưu tiên tài liệu chuyên biệt
      - Giảm CTĐT tổng quát
      - Boost theo trùng tên tài liệu
