@@ -97,7 +97,7 @@ export class RAGService {
   }
 
   /* =====================================================
-     RE-RANKING (CORE FIX)
+     RE-RANKING
      - Ưu tiên tài liệu chuyên biệt
      - Giảm CTĐT tổng quát
      - Boost theo trùng tên tài liệu
@@ -165,14 +165,12 @@ ${c.content}`
     query: string,
     context: string
   ): Promise<string> {
-    const systemPrompt = `
-Bạn là trợ lý AI của Đại học Kinh tế Quốc dân.
+    const systemPrompt = `Bạn là trợ lý AI của Đại học Kinh tế Quốc dân.
 
 NGUYÊN TẮC:
 - Chỉ sử dụng thông tin trong TÀI LIỆU.
 - Không suy diễn, không bịa.
-- Nếu không đủ thông tin, trả lời: "Không tìm thấy thông tin trong tài liệu."
-`;
+- Nếu không đủ thông tin, trả lời: "Không tìm thấy thông tin trong tài liệu."`;
 
     const res = await this.ollama.chat({
       model: this.ollamaModel,
@@ -209,5 +207,3 @@ NGUYÊN TẮC:
     return recent.join('\n');
   }
 }
-
-
