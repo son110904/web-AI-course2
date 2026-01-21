@@ -3,6 +3,9 @@ import { DocumentService } from '../services/document.service';
 import { EmbeddingService } from '../services/embedding.service';
 import { DatabaseModel } from '../models/database.model';
 import { MinIOModel } from '../models/minio.model';
+import { v4 as uuidv4 } from "uuid";
+import { Chunk } from "../models/chunk.model";
+
 
 export class UploadController {
   constructor(
@@ -10,7 +13,7 @@ export class UploadController {
     private minio: MinIOModel,
     private documentService: DocumentService,
     private embeddingService: EmbeddingService
-  ) {}
+  ) { }
 
   // INGEST từ MinIO → PostgreSQL
   async ingestFromMinIO(req: Request, res: Response) {
@@ -45,31 +48,45 @@ export class UploadController {
         source_file: metadata.source_file,
       });
 
-      //  Chunk text
-      const chunks = this.documentService.chunkText(text);
+      //  Chunk text - đoạn này HA sửa theo metadata từng chunk đã thiết lập mới
+      const rawChunks = this.documentService.chunkText(text);
 
-      // Embed + insert chunks
-      for (let i = 0; i < chunks.length; i++) {
-        const chunkText = chunks[i];
-        if (!chunkText) continue;
+      const chunks: Chunk[] = rawChunks.map((chunkText, index) => ({
+        id: uuidv4(),
+        docId: documentId,
+        order: index,
+        content: chunkText,
+        metadata: {
+          document_type: metadata.document_type,
+          entity: metadata.entity,
+          major: metadata.major,
+          source_file: metadata.source_file,
+        },
+      }));
 
-        const embedding = await this.embeddingService.generateEmbedding(chunkText);
+
+      // Embed + insert chunks - HA cũng sửa vòng for
+      for (const chunk of chunks) {
+        if (!chunk.content) continue;
+
+        const embedding = await this.embeddingService.generateEmbedding(chunk.content);
 
         if (embedding.length !== 768) {
           throw new Error(`Embedding dimension invalid: ${embedding.length}`);
         }
 
         await this.db.insertChunk({
-          document_id: documentId,
-          content: chunkText,
-          chunk_index: i,
+          document_id: chunk.docId,
+          content: chunk.content,
+          chunk_index: chunk.order,
           embedding,
-          document_type: metadata.document_type,
-          entity: metadata.entity,
-          major: metadata.major,
-          source_file: metadata.source_file,
+          document_type: chunk.metadata.document_type,
+          entity: chunk.metadata.entity,
+          major: chunk.metadata.major,
+          source_file: chunk.metadata.source_file,
         });
       }
+
 
       return res.json({
         message: 'Ingest thành công',
