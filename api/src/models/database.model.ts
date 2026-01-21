@@ -1,5 +1,15 @@
 import { Pool } from 'pg';
 
+
+export const ChunkSchema = {
+  id: String,
+  docId: String,
+  order: Number,
+  content: String,
+  metadata: Object
+};
+
+
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
@@ -17,7 +27,7 @@ export interface SearchResult {
   chunk_index: number;
 }
 
-const VECTOR_DIM = 768; 
+const VECTOR_DIM = 768;
 
 export class DatabaseModel {
   private pool: Pool;
@@ -88,36 +98,36 @@ export class DatabaseModel {
       client.release();
     }
   }
-async insertDocument(params: {
-  filename: string;
-  file_path: string;
-  file_size: number;
-  content_type: string;
-  document_type?: string;
-  entity?: string;
-  major?: string;
-  source_file?: string;
-}): Promise<string> {
-  const result = await this.pool.query(
-    `
+  async insertDocument(params: {
+    filename: string;
+    file_path: string;
+    file_size: number;
+    content_type: string;
+    document_type?: string;
+    entity?: string;
+    major?: string;
+    source_file?: string;
+  }): Promise<string> {
+    const result = await this.pool.query(
+      `
     INSERT INTO documents (filename, file_path, file_size, content_type, document_type, entity, major, source_file)
     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
     RETURNING id
     `,
-    [
-      params.filename,
-      params.file_path,
-      params.file_size,
-      params.content_type,
-      params.document_type || null,
-      params.entity || null,
-      params.major || null,
-      params.source_file || null,
-    ]
-  );
+      [
+        params.filename,
+        params.file_path,
+        params.file_size,
+        params.content_type,
+        params.document_type || null,
+        params.entity || null,
+        params.major || null,
+        params.source_file || null,
+      ]
+    );
 
-  return result.rows[0].id;
-}
+    return result.rows[0].id;
+  }
 
 
   async insertChunk(params: {
@@ -198,15 +208,15 @@ async insertDocument(params: {
     return result.rows;
   }
   async getIngestStats() {
-  const totalChunksResult = await this.pool.query(
-    'SELECT COUNT(*) as count FROM chunks'
-  );
-  
-  const totalDocsResult = await this.pool.query(
-    'SELECT COUNT(DISTINCT document_id) as count FROM chunks'
-  );
-  
-  const documentsResult = await this.pool.query(`
+    const totalChunksResult = await this.pool.query(
+      'SELECT COUNT(*) as count FROM chunks'
+    );
+
+    const totalDocsResult = await this.pool.query(
+      'SELECT COUNT(DISTINCT document_id) as count FROM chunks'
+    );
+
+    const documentsResult = await this.pool.query(`
     SELECT 
       document_id,
       COUNT(*) as num_chunks,
@@ -216,17 +226,17 @@ async insertDocument(params: {
     GROUP BY document_id
     ORDER BY document_id
   `);
-  
-  return {
-    totalDocuments: parseInt(totalDocsResult.rows[0]?.count || '0'),
-    totalChunks: parseInt(totalChunksResult.rows[0]?.count || '0'),
-    documents: documentsResult.rows
-  };
-}
-async getAllDocumentPaths(): Promise<string[]> {
-  const result = await this.pool.query(
-    'SELECT file_path FROM documents'
-  );
-  return result.rows.map(row => row.file_path);
-}
+
+    return {
+      totalDocuments: parseInt(totalDocsResult.rows[0]?.count || '0'),
+      totalChunks: parseInt(totalChunksResult.rows[0]?.count || '0'),
+      documents: documentsResult.rows
+    };
+  }
+  async getAllDocumentPaths(): Promise<string[]> {
+    const result = await this.pool.query(
+      'SELECT file_path FROM documents'
+    );
+    return result.rows.map(row => row.file_path);
+  }
 }

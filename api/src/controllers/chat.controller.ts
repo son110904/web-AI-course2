@@ -1,10 +1,14 @@
 import { Request, Response } from 'express';
 import { RAGService } from '../services/rag.service';
 import { ChatMessage } from '../models/database.model';
+import { expandQuery } from "../services/query-expansion.service";
 
 export class ChatController {
-  constructor(private ragService: RAGService) {}
+  constructor(private ragService: RAGService) { }
 
+  /**
+   * Chat dạng realtime (UI chat)
+   */
   async chat(req: Request, res: Response): Promise<void> {
     try {
       const { messages } = req.body;
@@ -14,12 +18,31 @@ export class ChatController {
         return;
       }
 
+      // Chuẩn hóa message
       const validMessages: ChatMessage[] = messages.map((m: any) => ({
         role: m.role === 'user' ? 'user' : 'assistant',
         content: String(m.content || ''),
       }));
 
-      const botMessage = await this.ragService.chat(validMessages);
+      /**
+       * 🔹 QUERY EXPANSION
+       * Chỉ expand message cuối (user question)
+       */
+      const lastMessage = validMessages[validMessages.length - 1];
+      let expandedQueries: string[] | null = null;
+
+      if (lastMessage.role === 'user') {
+        expandedQueries = expandQuery(lastMessage.content);
+      }
+
+      /**
+       * Gọi RAG service
+       * expandedQueries được truyền xuống để retriever dùng
+       */
+      const botMessage = await this.ragService.chat(
+        validMessages,
+        expandedQueries
+      );
 
       res.json({ botMessage });
     } catch (error) {
@@ -30,7 +53,10 @@ export class ChatController {
     }
   }
 
-  async ask(req: Request, res: Response): Promise<void> { //tích hợp với repo course-ai
+  /**
+   * Endpoint tích hợp với repo course-ai
+   */
+  async ask(req: Request, res: Response): Promise<void> {
     try {
       const { session_id, model_id, user, prompt, context } = req.body;
 
@@ -43,6 +69,7 @@ export class ChatController {
       }
 
       const history = Array.isArray(context?.history) ? context.history : [];
+
       const messages: ChatMessage[] = [
         ...history.map((m: any) => ({
           role: m.role === 'user' ? 'user' : 'assistant',
@@ -54,8 +81,16 @@ export class ChatController {
         },
       ];
 
+      /**
+       * 🔹 QUERY EXPANSION cho câu hỏi hiện tại
+       */
+      const expandedQueries = expandQuery(prompt);
+
       const startTime = Date.now();
-      const content = await this.ragService.chat(messages);
+      const content = await this.ragService.chat(
+        messages,
+        expandedQueries
+      );
       const responseTimeMs = Date.now() - startTime;
 
       res.json({
