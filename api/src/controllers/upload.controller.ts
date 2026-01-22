@@ -3,8 +3,6 @@ import { DocumentService } from '../services/document.service';
 import { EmbeddingService } from '../services/embedding.service';
 import { DatabaseModel } from '../models/database.model';
 import { MinIOModel } from '../models/minio.model';
-import { v4 as uuidv4 } from "uuid";
-import { Chunk } from "../models/chunk.model";
 
 
 export class UploadController {
@@ -34,7 +32,7 @@ export class UploadController {
         return res.status(400).json({ error: 'File không có nội dung text' });
       }
 
-      const metadata = this.documentService.parseMetadataFromPath(objectName);
+      const metadata = this.documentService.parseMetadataFromPath(objectName, text);
 
       // Insert document → lấy document_id
       const documentId = await this.db.insertDocument({
@@ -43,47 +41,29 @@ export class UploadController {
         file_size: buffer.length,
         content_type: 'unknown',
         document_type: metadata.document_type,
-        entity: metadata.entity,
-        major: metadata.major,
-        source_file: metadata.source_file,
+        metadata: metadata as any,
       });
 
       //  Chunk text - đoạn này HA sửa theo metadata từng chunk đã thiết lập mới
-      const rawChunks = this.documentService.chunkText(text);
-
-      const chunks: Chunk[] = rawChunks.map((chunkText, index) => ({
-        id: uuidv4(),
-        docId: documentId,
-        order: index,
-        content: chunkText,
-        metadata: {
-          document_type: metadata.document_type,
-          entity: metadata.entity,
-          major: metadata.major,
-          source_file: metadata.source_file,
-        },
-      }));
+      const chunks = this.documentService.chunkText(text);
 
 
       // Embed + insert chunks - HA cũng sửa vòng for
-      for (const chunk of chunks) {
-        if (!chunk.content) continue;
+      for (let i = 0; i < chunks.length; i++) {
+        const chunkText = chunks[i];
+        if (!chunkText) continue;
 
-        const embedding = await this.embeddingService.generateEmbedding(chunk.content);
+        const embedding = await this.embeddingService.generateEmbedding(chunkText);
 
         if (embedding.length !== 768) {
           throw new Error(`Embedding dimension invalid: ${embedding.length}`);
         }
 
         await this.db.insertChunk({
-          document_id: chunk.docId,
-          content: chunk.content,
-          chunk_index: chunk.order,
+          document_id: documentId,
+          content: chunkText,
+          chunk_index: i,
           embedding,
-          document_type: chunk.metadata.document_type,
-          entity: chunk.metadata.entity,
-          major: chunk.metadata.major,
-          source_file: chunk.metadata.source_file,
         });
       }
 

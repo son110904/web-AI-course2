@@ -12,11 +12,11 @@ export class IngestController {
     private db: DatabaseModel
   ) {}
 
-  // 🚀 INGEST TOÀN BỘ BUCKET SYLLABUS
+  // 🚀 INGEST TOÀN BỘ BUCKET
   async ingestAll(req: Request, res: Response) {
     try {
       const basePrefix = 'courses-chatbot';
-      const folders = ['curriculum', 'relegation', 'syllabus'];
+      const folders = ['curriculum', 'regulation', 'syllabus'];
        
       let totalFiles = 0;
       let totalChunks = 0;
@@ -25,7 +25,7 @@ export class IngestController {
       for (const folder of folders) {
         const prefix = `${basePrefix}/${folder}/`;
         
-        console.log(`📂 Scanning folder: ${prefix}`);
+        console.log(`\n📂 Processing folder: ${prefix}`);
         
         try {
           const files = await this.minio.listFiles(prefix);
@@ -37,52 +37,56 @@ export class IngestController {
             
             // Chỉ lấy file .docx
             if (!objectName.toLowerCase().endsWith('.docx')) {
-              console.log(`⏭️ Skipping non-docx file: ${objectName}`);
+              console.log(`⏭️ Skipping: ${objectName}`);
               continue;
             }
 
-            console.log(`📥 Processing: ${objectName}`);
+            console.log(`\n📥 Processing: ${objectName}`);
             
             try {
               totalFiles++;
 
-              // Download file từ MinIO
+              // 1. Download file
               const buffer = await this.minio.getFile(objectName);
               console.log(`  ✓ Downloaded ${buffer.length} bytes`);
 
-              // Extract text từ docx
+              // 2. Extract text
               const rawText = await this.documentService.extractText(buffer, objectName);
               console.log(`  ✓ Extracted ${rawText.length} characters`);
 
-              // Clean text
+              // 3. Clean text
               const text = this.documentService.cleanText(rawText);
               
               if (!text || text.trim().length === 0) {
-                console.log(`  ⚠️ No text content after cleaning, skipping`);
+                console.log(`  ⚠️ No content, skipping`);
                 continue;
               }
 
-              // Chunk text
-              const chunks = this.documentService.chunkText(text);
-              console.log(`  ✓ Created ${chunks.length} chunks`);
+              // 4. Parse metadata (FULL VERSION)
+              const metadata = this.documentService.parseMetadataFromPath(
+                objectName,
+                text
+              );
 
-              const metadata = this.documentService.parseMetadataFromPath(objectName);
+              console.log('  📋 Metadata:', JSON.stringify(metadata, null, 2));
 
-              // Insert document vào DB để lấy UUID
+              // 5. Insert document with full metadata
               const documentId = await this.db.insertDocument({
                 filename: objectName.split('/').pop() || objectName,
                 file_path: objectName,
                 file_size: buffer.length,
                 content_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
                 document_type: metadata.document_type,
-                entity: metadata.entity,
-                major: metadata.major,
-                source_file: metadata.source_file,
+                metadata: metadata as any
               });
 
-              console.log(`  ✓ Document inserted with ID: ${documentId}`);
+              console.log(`  ✓ Document inserted: ${documentId}`);
 
-              // Embed và save từng chunk
+              // 6. Chunk text
+              const chunks = this.documentService.chunkText(text);
+              console.log(`  ✓ Created ${chunks.length} chunks`);
+
+              // 7. Embed và save chunks
               for (let i = 0; i < chunks.length; i++) {
                 const embedding = await this.embeddingService.generateEmbedding(chunks[i]);
                 
@@ -90,28 +94,22 @@ export class IngestController {
                   document_id: documentId,
                   content: chunks[i],
                   chunk_index: i,
-                  embedding,
-                  document_type: metadata.document_type,
-                  entity: metadata.entity,
-                  major: metadata.major,
-                  source_file: metadata.source_file,
+                  embedding
                 });
 
                 totalChunks++;
                 
-                // Log progress mỗi 10 chunks
                 if ((i + 1) % 10 === 0) {
-                  console.log(`  ✓ Processed ${i + 1}/${chunks.length} chunks`);
+                  console.log(`  ✓ Embedded ${i + 1}/${chunks.length} chunks`);
                 }
               }
 
-              console.log(`✅ Successfully ingested: ${objectName} (${chunks.length} chunks)`);
+              console.log(`✅ Successfully ingested: ${objectName}`);
 
             } catch (fileError: any) {
               const errorMsg = `Error processing ${objectName}: ${fileError.message}`;
               console.error(`❌ ${errorMsg}`);
               errors.push(errorMsg);
-              // Tiếp tục với file tiếp theo
             }
           }
         } catch (folderError: any) {
@@ -122,10 +120,10 @@ export class IngestController {
       }
 
       console.log(`\n🎉 Ingest completed!`);
-      console.log(`📊 Total files processed: ${totalFiles}`);
-      console.log(`📦 Total chunks created: ${totalChunks}`);
+      console.log(`📊 Total files: ${totalFiles}`);
+      console.log(`📦 Total chunks: ${totalChunks}`);
       if (errors.length > 0) {
-        console.log(`⚠️ Errors encountered: ${errors.length}`);
+        console.log(`⚠️ Errors: ${errors.length}`);
       }
 
       res.json({
@@ -133,7 +131,7 @@ export class IngestController {
         totalFiles,
         totalChunks,
         errors: errors.length > 0 ? errors : undefined,
-        folders: folders
+        folders
       });
 
     } catch (error: any) {
@@ -145,44 +143,39 @@ export class IngestController {
     }
   }
 
-  // Kiểm tra trạng thái ingest
+  // Kiểm tra trạng thái
   async checkIngestStatus(req: Request, res: Response) {
     try {
       const stats = await this.db.getIngestStats();
-      res.json({
-        summary: {
-          totalDocuments: stats.totalDocuments,
-          totalChunks: stats.totalChunks
-        },
-        documents: stats.documents
-      });
+      res.json(stats);
     } catch (error: any) {
       console.error('Check status failed:', error);
       res.status(500).json({ error: error.message });
     }
   }
-  // XÓA TOÀN BỘ DỮ LIỆU INGEST
-async clearAll(req: Request, res: Response) {
-  try {
-    const chunksResult = await this.db['pool'].query(
-      'DELETE FROM chunks RETURNING id'
-    );
-    
-    const docsResult = await this.db['pool'].query(
-      'DELETE FROM documents RETURNING id'
-    );
-    
-    console.log(`Deleted ${chunksResult.rowCount} chunks`);
-    console.log(`Deleted ${docsResult.rowCount} documents`);
-    
-    res.json({
-      message: 'Đã xóa toàn bộ dữ liệu ingest',
-      deletedChunks: chunksResult.rowCount,
-      deletedDocuments: docsResult.rowCount
-    });
-  } catch (error: any) {
-    console.error('Clear failed:', error);
-    res.status(500).json({ error: error.message });
+
+  // Xóa tất cả
+  async clearAll(req: Request, res: Response) {
+    try {
+      const chunksResult = await this.db['pool'].query(
+        'DELETE FROM chunks RETURNING id'
+      );
+      
+      const docsResult = await this.db['pool'].query(
+        'DELETE FROM documents RETURNING id'
+      );
+      
+      console.log(`Deleted ${chunksResult.rowCount} chunks`);
+      console.log(`Deleted ${docsResult.rowCount} documents`);
+      
+      res.json({
+        message: 'Đã xóa toàn bộ dữ liệu',
+        deletedChunks: chunksResult.rowCount,
+        deletedDocuments: docsResult.rowCount
+      });
+    } catch (error: any) {
+      console.error('Clear failed:', error);
+      res.status(500).json({ error: error.message });
+    }
   }
-}
 }

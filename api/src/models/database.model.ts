@@ -1,6 +1,5 @@
 import { Pool } from 'pg';
 
-
 export const ChunkSchema = {
   id: String,
   docId: String,
@@ -8,7 +7,6 @@ export const ChunkSchema = {
   content: String,
   metadata: Object
 };
-
 
 export interface ChatMessage {
   role: 'user' | 'assistant';
@@ -20,12 +18,62 @@ export interface SearchResult {
   document_id: string;
   content: string;
   similarity: number;
-  document_type: string;
-  entity: string;
-  major: string;
-  source_file: string;
   chunk_index: number;
+  // Metadata từ documents
+  document_type: string;
+  metadata: Record<string, any>;
 }
+
+// ========================================
+// METADATA INTERFACES
+// ========================================
+
+export interface SyllabusMetadata {
+  document_type: 'syllabus';
+  source_file: string;
+  subject_name?: string;
+  subject_code?: string;
+  major?: string;
+  credits?: number;
+  faculty?: string;
+  level?: string;
+  language?: string;
+  academic_year?: string;
+}
+
+export interface RegulationMetadata {
+  document_type: 'regulation';
+  source_file: string;
+  regulation_type?: 'student_assessment' | 'admission_policy' | 'other';
+  decision_number?: string;
+  issued_year?: number;
+  admission_year?: number;
+  issuing_body?: string;
+  applicable_object?: string;
+  applicable_major?: string;
+  effective_status?: 'active' | 'expired';
+  education_level?: string;
+  institution?: string;
+  language?: string;
+}
+
+export interface CurriculumMetadata {
+  document_type: 'curriculum';
+  source_file: string;
+  program_name?: string;
+  major?: string;
+  major_code?: string;
+  degree?: string;
+  total_credits?: number;
+  training_duration?: string;
+  admission_from_year?: number;
+  issuing_decision?: string;
+  issuing_date?: string;
+  managing_unit?: string;
+  language?: string;
+}
+
+export type DocumentMetadata = SyllabusMetadata | RegulationMetadata | CurriculumMetadata;
 
 const VECTOR_DIM = 768;
 
@@ -41,6 +89,9 @@ export class DatabaseModel {
     try {
       await client.query('CREATE EXTENSION IF NOT EXISTS vector');
 
+      // ============================================
+      // DOCUMENTS TABLE - Metadata đầy đủ
+      // ============================================
       await client.query(`
         CREATE TABLE IF NOT EXISTS documents (
           id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -48,97 +99,101 @@ export class DatabaseModel {
           file_path TEXT NOT NULL,
           file_size INTEGER,
           content_type TEXT,
-          document_type TEXT,
-          entity TEXT,
-          major TEXT,
-          source_file TEXT,
-          uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+          
+          -- Document type
+          document_type TEXT NOT NULL,
+          
+          -- Metadata JSON (chứa tất cả metadata đặc thù)
+          metadata JSONB DEFAULT '{}'::jsonb,
+          
+          uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          
+          -- Index cho search nhanh
+          CONSTRAINT valid_document_type CHECK (document_type IN ('syllabus', 'regulation', 'curriculum'))
         )
       `);
 
+      // ============================================
+      // CHUNKS TABLE - Minimal metadata
+      // ============================================
       await client.query(`
         CREATE TABLE IF NOT EXISTS chunks (
           id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
           document_id UUID REFERENCES documents(id) ON DELETE CASCADE,
           content TEXT NOT NULL,
           chunk_index INTEGER,
-          document_type TEXT,
-          entity TEXT,
-          major TEXT,
-          source_file TEXT,
+          
+          -- Embedding
           embedding VECTOR(${VECTOR_DIM}),
+          
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
       `);
 
-      await client.query(`
-        ALTER TABLE documents
-        ADD COLUMN IF NOT EXISTS document_type TEXT,
-        ADD COLUMN IF NOT EXISTS entity TEXT,
-        ADD COLUMN IF NOT EXISTS major TEXT,
-        ADD COLUMN IF NOT EXISTS source_file TEXT
-      `);
-
-      await client.query(`
-        ALTER TABLE chunks
-        ADD COLUMN IF NOT EXISTS document_type TEXT,
-        ADD COLUMN IF NOT EXISTS entity TEXT,
-        ADD COLUMN IF NOT EXISTS major TEXT,
-        ADD COLUMN IF NOT EXISTS source_file TEXT
-      `);
-
+      // ============================================
+      // INDEXES
+      // ============================================
+      
+      // Vector similarity search
       await client.query(`
         CREATE INDEX IF NOT EXISTS chunks_embedding_idx
         ON chunks USING ivfflat (embedding vector_cosine_ops)
         WITH (lists = 100)
       `);
 
-      console.log('✓ Database initialized');
+      // Metadata search indexes
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS documents_type_idx 
+        ON documents(document_type)
+      `);
+
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS documents_metadata_idx 
+        ON documents USING gin(metadata)
+      `);
+
+      console.log('✓ Database initialized with full metadata support');
     } finally {
       client.release();
     }
   }
+
+  // ============================================
+  // INSERT DOCUMENT
+  // ============================================
   async insertDocument(params: {
     filename: string;
     file_path: string;
     file_size: number;
     content_type: string;
-    document_type?: string;
-    entity?: string;
-    major?: string;
-    source_file?: string;
+    document_type: 'syllabus' | 'regulation' | 'curriculum';
+    metadata: Record<string, any>;
   }): Promise<string> {
     const result = await this.pool.query(
-      `
-    INSERT INTO documents (filename, file_path, file_size, content_type, document_type, entity, major, source_file)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-    RETURNING id
-    `,
+      `INSERT INTO documents (filename, file_path, file_size, content_type, document_type, metadata)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING id`,
       [
         params.filename,
         params.file_path,
         params.file_size,
         params.content_type,
-        params.document_type || null,
-        params.entity || null,
-        params.major || null,
-        params.source_file || null,
+        params.document_type,
+        JSON.stringify(params.metadata)
       ]
     );
 
     return result.rows[0].id;
   }
 
-
+  // ============================================
+  // INSERT CHUNK
+  // ============================================
   async insertChunk(params: {
     document_id: string;
     content: string;
     chunk_index: number;
     embedding: number[];
-    document_type?: string;
-    entity?: string;
-    major?: string;
-    source_file?: string;
   }): Promise<void> {
     if (params.embedding.length !== VECTOR_DIM) {
       throw new Error(`Embedding dimension mismatch: ${params.embedding.length}`);
@@ -147,28 +202,26 @@ export class DatabaseModel {
     const embeddingStr = `[${params.embedding.join(',')}]`;
 
     await this.pool.query(
-      `INSERT INTO chunks (document_id, content, chunk_index, document_type, entity, major, source_file, embedding)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8::vector)`,
+      `INSERT INTO chunks (document_id, content, chunk_index, embedding)
+       VALUES ($1, $2, $3, $4::vector)`,
       [
         params.document_id,
         params.content,
         params.chunk_index,
-        params.document_type || null,
-        params.entity || null,
-        params.major || null,
-        params.source_file || null,
         embeddingStr,
       ]
     );
   }
 
+  // ============================================
+  // SEARCH WITH METADATA
+  // ============================================
   async searchSimilarChunks(
     queryEmbedding: number[],
     limit = 5,
     filters?: {
       document_type?: string;
-      entity?: string;
-      major?: string;
+      metadata_filters?: Record<string, any>;
     }
   ): Promise<SearchResult[]> {
     if (queryEmbedding.length !== VECTOR_DIM) {
@@ -177,62 +230,90 @@ export class DatabaseModel {
 
     const embeddingStr = `[${queryEmbedding.join(',')}]`;
 
-    const result = await this.pool.query(
-      `
+    let query = `
       SELECT
         c.id AS chunk_id,
         c.document_id,
         c.content,
+        c.chunk_index,
         1 - (c.embedding <=> $1::vector) AS similarity,
-        c.document_type,
-        c.entity,
-        c.major,
-        c.source_file,
-        c.chunk_index
+        d.document_type,
+        d.metadata
       FROM chunks c
-      WHERE ($2::text IS NULL OR c.document_type = $2)
-        AND ($3::text IS NULL OR c.entity = $3)
-        AND ($4::text IS NULL OR c.major = $4)
-      ORDER BY c.embedding <=> $1::vector
-      LIMIT $5
-      `,
-      [
-        embeddingStr,
-        filters?.document_type || null,
-        filters?.entity || null,
-        filters?.major || null,
-        limit,
-      ]
-    );
+      JOIN documents d ON d.id = c.document_id
+      WHERE 1=1
+    `;
 
+    const params: any[] = [embeddingStr];
+    let paramIndex = 2;
+
+    // Filter by document type
+    if (filters?.document_type) {
+      query += ` AND d.document_type = $${paramIndex}`;
+      params.push(filters.document_type);
+      paramIndex++;
+    }
+
+    // Filter by metadata (JSON query)
+    if (filters?.metadata_filters) {
+      for (const [key, value] of Object.entries(filters.metadata_filters)) {
+        query += ` AND d.metadata->>'${key}' = $${paramIndex}`;
+        params.push(value);
+        paramIndex++;
+      }
+    }
+
+    query += `
+      ORDER BY c.embedding <=> $1::vector
+      LIMIT $${paramIndex}
+    `;
+    params.push(limit);
+
+    const result = await this.pool.query(query, params);
     return result.rows;
   }
+
+  // ============================================
+  // STATS
+  // ============================================
   async getIngestStats() {
     const totalChunksResult = await this.pool.query(
       'SELECT COUNT(*) as count FROM chunks'
     );
 
     const totalDocsResult = await this.pool.query(
-      'SELECT COUNT(DISTINCT document_id) as count FROM chunks'
+      'SELECT COUNT(*) as count FROM documents'
     );
 
+    const byTypeResult = await this.pool.query(`
+      SELECT 
+        document_type,
+        COUNT(*) as count
+      FROM documents
+      GROUP BY document_type
+    `);
+
     const documentsResult = await this.pool.query(`
-    SELECT 
-      document_id,
-      COUNT(*) as num_chunks,
-      MIN(chunk_index) as min_index,
-      MAX(chunk_index) as max_index
-    FROM chunks
-    GROUP BY document_id
-    ORDER BY document_id
-  `);
+      SELECT 
+        d.id,
+        d.filename,
+        d.document_type,
+        d.metadata,
+        COUNT(c.id) as num_chunks
+      FROM documents d
+      LEFT JOIN chunks c ON c.document_id = d.id
+      GROUP BY d.id
+      ORDER BY d.uploaded_at DESC
+    `);
 
     return {
       totalDocuments: parseInt(totalDocsResult.rows[0]?.count || '0'),
       totalChunks: parseInt(totalChunksResult.rows[0]?.count || '0'),
+      byType: byTypeResult.rows,
       documents: documentsResult.rows
     };
   }
+
   async getAllDocumentPaths(): Promise<string[]> {
     const result = await this.pool.query(
       'SELECT file_path FROM documents'
