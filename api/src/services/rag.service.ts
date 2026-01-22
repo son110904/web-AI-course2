@@ -43,12 +43,44 @@ export class RAGService {
 
     console.log(`📊 Retrieved ${rawChunks.length} chunks`);
 
+    rawChunks.forEach((c, i) => {
+      console.log(
+        `#${i + 1} | ${(c.similarity * 100).toFixed(1)}% | ${c.document_type} | ${c.metadata.source_file}`
+      );
+    });
+
     if (rawChunks.length === 0) {
       return this.noContext();
     }
 
     // 4. Re-rank với metadata awareness
-    const reranked = this.rerankWithMetadata(rawChunks, query);
+    let reranked = this.rerankWithMetadata(rawChunks, query);
+
+    const fileMention = this.detectMentionedSourceFile(query, reranked);
+    if (fileMention) {
+      reranked = reranked.filter(c => c.metadata.source_file === fileMention);
+      console.log(`INFO: Restricting to source file: ${fileMention}`);
+    }
+
+    let expandedBySubject = false;
+    const topAfterFilter = reranked[0];
+    if (topAfterFilter?.document_type === 'syllabus' && this.queryMentionsSubject(query, topAfterFilter.metadata)) {
+      const subjectFilters = topAfterFilter.metadata.subject_code
+        ? { metadata_filters: { subject_code: topAfterFilter.metadata.subject_code } }
+        : { metadata_filters: { subject_name: topAfterFilter.metadata.subject_name } };
+
+      const subjectChunks = await this.db.searchSimilarChunks(
+        embedding,
+        100,
+        subjectFilters
+      );
+
+      if (subjectChunks.length > 0) {
+        reranked = this.rerankWithMetadata(subjectChunks, query);
+        expandedBySubject = true;
+        console.log(`INFO: Expanded to ${subjectChunks.length} chunks for subject`);
+      }
+    }
 
     console.log('\n🔁 Top 5 after re-rank:');
     reranked.slice(0, 5).forEach((c, i) => {
@@ -67,9 +99,9 @@ export class RAGService {
       return this.noContext();
     }
 
-    const selectedChunks = reranked
-      .filter(c => c.similarity >= MIN_CHUNK)
-      .slice(0, 4);
+    const selectedChunks = expandedBySubject
+      ? reranked.slice(0, 8)
+      : reranked.filter(c => c.similarity >= MIN_CHUNK).slice(0, 4);
 
     if (selectedChunks.length === 0) {
       return this.noContext();
@@ -95,7 +127,7 @@ export class RAGService {
     document_type?: string;
     metadata_filters?: Record<string, any>;
   } {
-    const q = query.toLowerCase();
+    const q = this.normalizeForMatch(query);
     const filters: any = {};
 
     // Detect document type
@@ -159,6 +191,11 @@ export class RAGService {
       .map(c => {
         let bonus = 0;
         const meta = c.metadata;
+
+        // Boost if query explicitly mentions the source file
+        if (this.queryMentionsSourceFile(q, meta.source_file)) {
+          bonus += 0.3;
+        }
 
         // 1. Prioritize specific document types
         if (c.document_type === 'syllabus') {
@@ -324,6 +361,44 @@ NGUYÊN TẮC:
 
     // Append sources
     return answer;
+  }
+
+  private normalizeForMatch(text: string): string {
+    return text
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[_-]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private queryMentionsSourceFile(queryNormalized: string, sourceFile?: string): boolean {
+    if (!sourceFile) return false;
+    const full = this.normalizeForMatch(sourceFile);
+    const noExt = this.normalizeForMatch(sourceFile.replace(/\.[^/.]+$/, ''));
+    return queryNormalized.includes(full) || queryNormalized.includes(noExt);
+  }
+
+  private detectMentionedSourceFile(query: string, chunks: SearchResult[]): string | null {
+    const q = this.normalizeForMatch(query);
+    const matches = chunks
+      .map(c => c.metadata?.source_file)
+      .filter((f): f is string => !!f)
+      .filter(f => this.queryMentionsSourceFile(q, f));
+
+    if (matches.length === 0) return null;
+    return matches[0];
+  }
+
+  private queryMentionsSubject(query: string, meta: Record<string, any>): boolean {
+    const q = this.normalizeForMatch(query);
+    const subjectName = meta?.subject_name ? this.normalizeForMatch(meta.subject_name) : '';
+    const subjectCode = meta?.subject_code ? this.normalizeForMatch(meta.subject_code) : '';
+
+    if (subjectCode && q.includes(subjectCode)) return true;
+    if (subjectName && q.includes(subjectName)) return true;
+    return false;
   }
 
   private noContext(): string {

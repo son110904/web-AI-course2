@@ -58,7 +58,7 @@ export class DocumentService {
     
     // Xác định folder
     const folder = parts.find(p => 
-      ['syllabus', 'curriculum', 'relegation'].includes(p)
+      ['syllabus', 'curriculum', 'regulation'].includes(p)
     ) || 'syllabus';
 
     console.log(`📋 Parsing metadata for: ${filename} (folder: ${folder})`);
@@ -68,7 +68,7 @@ export class DocumentService {
         return this.parseSyllabusMetadata(filename, fileContent);
       case 'curriculum':
         return this.parseCurriculumMetadata(filename, fileContent);
-      case 'relegation':
+      case 'regulation':
         return this.parseRegulationMetadata(filename, fileContent);
       default:
         return this.parseSyllabusMetadata(filename, fileContent);
@@ -238,33 +238,39 @@ export class DocumentService {
     return 'Đại học Kinh tế Quốc dân';
   }
 
-  private extractCredits(content?: string): number | undefined {
-    if (!content) return undefined;
-
-    const normalized = content
+  private normalizeForSearch(text: string): string {
+    return text
+      .toLowerCase()
       .normalize('NFD')
-      .replace(/[̀-ͯ]/g, '')
-      .toLowerCase();
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
 
-    const patterns = [
+  private extractCredits(content?: string): number {
+    if (!content) return 3;
+
+    const normalized = this.normalizeForSearch(content);
+    const patterns: RegExp[] = [
       /so\s*tin\s*chi\s*[:\-]?\s*(\d{1,2})/i,
       /tin\s*chi\s*[:\-]?\s*(\d{1,2})/i,
-      /tc\s*[:\-]?\s*(\d{1,2})/i,
       /credits?\s*[:\-]?\s*(\d{1,2})/i,
-      /(\d{1,2})\s*(tin\s*chi|tc|credits?)/i,
+      /(\d{1,2})\s*(tin\s*chi|tc|credits?)\b/i
     ];
 
+    const values: number[] = [];
     for (const pattern of patterns) {
       const match = normalized.match(pattern);
       if (match) {
         const value = parseInt(match[1], 10);
         if (!Number.isNaN(value) && value > 0) {
-          return value;
+          values.push(value);
         }
       }
     }
 
-    return undefined;
+    if (values.length === 0) return 3;
+    return Math.max(...values);
   }
 
   private extractTotalCredits(content?: string): number {
@@ -366,3 +372,4 @@ export class DocumentService {
     return chunks;
   }
 }
+

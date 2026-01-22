@@ -256,12 +256,17 @@ export class DatabaseModel {
 
     // Filter by metadata (JSON query)
     if (filters?.metadata_filters) {
-      for (const [key, value] of Object.entries(filters.metadata_filters)) {
+    for (const [key, value] of Object.entries(filters.metadata_filters)) {
+      if (key === 'subject_name') {
+        query += ` AND d.metadata->>'subject_name' ILIKE $${paramIndex}`;
+        params.push(`%${value}%`);
+      } else {
         query += ` AND d.metadata->>'${key}' = $${paramIndex}`;
         params.push(value);
-        paramIndex++;
       }
+      paramIndex++;
     }
+  }
 
     query += `
       ORDER BY c.embedding <=> $1::vector

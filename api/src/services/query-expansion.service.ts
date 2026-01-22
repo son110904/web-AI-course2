@@ -35,7 +35,8 @@ const QUERY_SYNONYMS: Record<string, string[]> = {
         "instructor",
         "ai dạy",
         "ai phụ trách",
-        "người hướng dẫn"
+        "người hướng dẫn",
+        "có dạy"
     ],
     "giảng viên": [
         "thầy",
