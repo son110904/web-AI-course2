@@ -220,14 +220,42 @@ export class RAGService {
         }
 
         if (c.document_type === 'regulation') {
-          // Regulation có ưu tiên cao cho câu hỏi về quy định
-          if (
-            q.includes('quy định') ||
-            q.includes('quy chế') ||
-            q.includes('điều kiện') ||
-            q.includes('tốt nghiệp')
-          ) {
-            bonus += 0.15;
+          // 🎯 BOOST SPECIFIC regulations (decision numbers)
+          const isSpecificRegulation = meta.decision_number || 
+                                       meta.source_file?.toLowerCase().includes('qđ ') ||
+                                       meta.source_file?.toLowerCase().includes('quyết định');
+          
+          const isGeneralRegulation = meta.source_file?.toLowerCase().includes('quy chế đào tạo') ||
+                                     meta.source_file?.toLowerCase().includes('quy chế tuyển sinh');
+
+          // Ưu tiên file cụ thể (QĐ ban hành quy chế X) hơn file tổng quát (Quy chế đào tạo)
+          if (isSpecificRegulation) {
+            bonus += 0.2; // Boost cao hơn cho regulation cụ thể
+            
+            // Boost thêm nếu query nhắc đến nội dung regulation
+            if (q.includes('điểm rèn luyện') && meta.source_file?.toLowerCase().includes('rèn luyện')) {
+              bonus += 0.25;
+            }
+            if (q.includes('đánh giá') && meta.source_file?.toLowerCase().includes('đánh giá')) {
+              bonus += 0.15;
+            }
+          } else if (isGeneralRegulation) {
+            // File tổng quát chỉ được boost nhẹ
+            if (
+              q.includes('quy định') ||
+              q.includes('quy chế')
+            ) {
+              bonus += 0.05; // Boost thấp hơn nhiều
+            }
+            // Penalize nếu query hỏi cụ thể
+            if (q.includes('ban hành') || q.includes('quyết định')) {
+              bonus -= 0.1;
+            }
+          } else {
+            // Các regulation khác
+            if (q.includes('quy định') || q.includes('quy chế')) {
+              bonus += 0.12;
+            }
           }
 
           // Penalize expired regulations
