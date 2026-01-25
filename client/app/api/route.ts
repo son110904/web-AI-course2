@@ -13,7 +13,7 @@ export async function POST(req: NextRequest) { //Hàm này chạy khi frontend g
 
     const body = await req.json(); //lấy body, là những gì người dùng nhập vào ở frontend, là json
 
-    const res = await fetch(`${BACKEND_URL}/api/demo_agent/v1/ask`, { //gửi request sang backend
+    const res = await fetch(`${BACKEND_URL}/api/chat`, { //gửi request sang backend
       method: "POST",
       headers: {
         "Content-Type": "application/json",
