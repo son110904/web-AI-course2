@@ -22,11 +22,20 @@ export async function createApp(): Promise<Express> {
     credentials: true,
   }));
   
+  // Handle UTF-8 encoding
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    next();
+  });
+
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
   
   app.use((req: Request, res: Response, next: NextFunction) => {
     console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
+    if (req.method === 'POST' && req.path.includes('/api/demo_agent')) {
+      console.log('📥 Request body:', JSON.stringify(req.body, null, 2));
+    }
     next();
   });
 
