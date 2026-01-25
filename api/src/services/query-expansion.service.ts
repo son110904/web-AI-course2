@@ -46,6 +46,50 @@ const QUERY_SYNONYMS: Record<string, string[]> = {
         "lecturer",
         "ai dạy"
     ],
+    "thầy": [
+        "giảng viên",
+        "giáo viên",
+        "thầy cô",
+        "lecturer",
+        "instructor",
+        "người dạy"
+    ],
+    "cô": [
+        "giảng viên",
+        "giáo viên",
+        "thầy cô",
+        "lecturer",
+        "instructor",
+        "người dạy"
+    ],
+    "giáo viên": [
+        "giảng viên",
+        "thầy",
+        "cô",
+        "thầy cô",
+        "lecturer",
+        "instructor"
+    ],
+    "thạc sĩ": [
+        "ths",
+        "th.s",
+        "th.s.",
+        "thạc sỹ",
+        "giảng viên"
+    ],
+    "ths": [
+        "thạc sĩ",
+        "thạc sỹ",
+        "th.s",
+        "th.s.",
+        "giảng viên"
+    ],
+    "th.s": [
+        "thạc sĩ",
+        "thạc sỹ",
+        "ths",
+        "giảng viên"
+    ],
     
     // Tín chỉ
     "tín chỉ": [
@@ -84,6 +128,12 @@ const QUERY_SYNONYMS: Record<string, string[]> = {
         "lớp học",
         "khóa học",
         "module"
+    ],
+    "môn": [
+        "môn học",
+        "học phần",
+        "course",
+        "subject"
     ],
     "học kỳ": [
         "kỳ học",
@@ -284,11 +334,28 @@ export function expandQuery(query: string): string[] {
     // Tìm kiếm partial match
     for (const key in ALL_SYNONYMS) {
         if (lowerQuery.includes(key)) {
-            ALL_SYNONYMS[key].forEach(synonym => expanded.add(synonym));
+            const pattern = new RegExp(escapeRegExp(key), 'gi');
+            ALL_SYNONYMS[key].forEach(synonym => {
+                expanded.add(synonym);
+                expanded.add(query.replace(pattern, synonym));
+            });
         }
+    }
+
+    const strippedMon = query
+        .replace(/\bmôn\s+(?!học\b)/gi, '')
+        .replace(/\bmon\s+(?!hoc\b)/gi, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    if (strippedMon && strippedMon !== query) {
+        expanded.add(strippedMon);
     }
     
     return Array.from(expanded);
+}
+
+function escapeRegExp(value: string): string {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /**
