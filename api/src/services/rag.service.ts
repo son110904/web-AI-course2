@@ -186,6 +186,7 @@ export class RAGService {
     query: string
   ): SearchResult[] {
     const q = query.toLowerCase();
+    const qNormalized = this.normalizeForMatch(query);
 
     return chunks
       .map(c => {
@@ -214,9 +215,7 @@ export class RAGService {
           }
 
           // Boost nếu match subject name
-          if (meta.subject_name && q.includes(meta.subject_name.toLowerCase())) {
-            bonus += 0.2;
-          }
+          bonus += this.getNameMatchBonus(qNormalized, meta.subject_name);
         }
 
         if (c.document_type === 'regulation') {
@@ -276,14 +275,14 @@ export class RAGService {
             // Giảm CTĐT cho các câu hỏi cụ thể
             bonus -= 0.1;
           }
+
+          // Boost náº¿u match program name (partial vs full)
+          bonus += this.getNameMatchBonus(qNormalized, meta.program_name);
         }
 
         // 2. Major matching
         if (meta.major) {
-          const majorLower = meta.major.toLowerCase();
-          if (q.includes(majorLower)) {
-            bonus += 0.1;
-          }
+          bonus += this.getNameMatchBonus(qNormalized, meta.major);
         }
 
         // 3. Recent year bonus
@@ -406,6 +405,24 @@ NGUYÊN TẮC:
     const full = this.normalizeForMatch(sourceFile);
     const noExt = this.normalizeForMatch(sourceFile.replace(/\.[^/.]+$/, ''));
     return queryNormalized.includes(full) || queryNormalized.includes(noExt);
+  }
+
+  private getNameMatchBonus(queryNormalized: string, name?: string): number {
+    if (!name) return 0;
+    const nameNormalized = this.normalizeForMatch(name);
+    if (!nameNormalized) return 0;
+
+    // Full name match gets a higher boost.
+    if (queryNormalized.includes(nameNormalized)) {
+      return 0.25;
+    }
+
+    const tokens = nameNormalized.split(' ').filter(Boolean);
+    const meaningful = tokens.filter(t => t.length >= 3);
+    const candidates = meaningful.length > 0 ? meaningful : tokens;
+    const hasPartial = candidates.some(t => queryNormalized.includes(t));
+
+    return hasPartial ? 0.1 : 0;
   }
 
   private detectMentionedSourceFile(query: string, chunks: SearchResult[]): string | null {

@@ -20,6 +20,7 @@ export function ChatbotWidget() {
   const [isExpanded, setIsExpanded] = useState(false)
   const [messages, setMessages] = useState<Message[]>([])
   const [inputValue, setInputValue] = useState("")
+  const [isThinking, setIsThinking] = useState(false)
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const smallChatMessagesRef = useRef<HTMLDivElement>(null)
@@ -45,6 +46,7 @@ export function ChatbotWidget() {
 
     setMessages((prev) => [...prev, userMessage])
     setInputValue("")
+    setIsThinking(true)
 
     try {
       // Use Next.js proxy route at `/api` which forwards to BACKEND_API_URL
@@ -80,6 +82,8 @@ export function ChatbotWidget() {
         timestamp: new Date(),
       }
       setMessages((prev) => [...prev, errorMessage])
+    } finally {
+      setIsThinking(false)
     }
   }
 
@@ -179,6 +183,13 @@ export function ChatbotWidget() {
                       </div>
                     </div>
                   ))}
+                  {isThinking && (
+                    <div className="flex justify-start">
+                      <div className="max-w-[70%] rounded-lg px-4 py-3 bg-gray-100 text-gray-900">
+                        <p className="text-sm leading-relaxed animate-pulse">Đợi tí, AI đang nghĩ...</p>
+                      </div>
+                    </div>
+                  )}
                   <div ref={messagesEndRef} />
                 </div>
               </div>
@@ -276,6 +287,13 @@ export function ChatbotWidget() {
             </div>
           </div>
         ))}
+        {isThinking && (
+          <div className="flex justify-start">
+            <div className="max-w-[85%] rounded-lg px-3 py-2 bg-gray-100 text-gray-900">
+              <p className="text-sm leading-relaxed animate-pulse">Đợi tí, AI đang nghĩ...</p>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="border-t bg-white p-2.5">
