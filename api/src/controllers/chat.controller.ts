@@ -58,6 +58,13 @@ export class ChatController {
    */
   async ask(req: Request, res: Response): Promise<void> {
     try {
+      // Support the UI chat payload too: { messages: [{ role, content }, ...] }
+      // This allows using only /api/demo_agent/v1/ask as the single chat endpoint.
+      if (Array.isArray(req.body?.messages)) {
+        await this.chat(req, res);
+        return;
+      }
+
       const { session_id, model_id, user, prompt, context } = req.body;
 
       if (!session_id || !model_id || !user || !prompt) {

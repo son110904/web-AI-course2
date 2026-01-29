@@ -13,10 +13,6 @@ export function createRoutes(
   router.get('/health', (_, res) => {
     res.json({ status: 'ok' });
   });
-  
-  router.post('/api/chat', (req, res) =>
-    chatController.chat(req, res)
-  );
 
   router.post('/api/demo_agent/v1/ask', (req, res) =>
     chatController.ask(req, res)

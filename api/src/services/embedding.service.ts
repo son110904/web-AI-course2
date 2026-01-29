@@ -1,56 +1,88 @@
-import { pipeline, env } from '@xenova/transformers';
-
-env.allowLocalModels = false;
-
 export class EmbeddingService {
-  private extractor: any;
-  private initialized = false;
+  private openaiBaseUrl!: string;
+  private openaiTimeoutMs!: number;
 
   constructor(
-    private modelName: string = 'Xenova/paraphrase-multilingual-mpnet-base-v2'
+    private openaiApiKey: string,
+    private openaiEmbeddingModel: string = 'text-embedding-3-small',
+    private openaiBaseUrlOverride?: string,
+    private openaiTimeoutMsOverride?: number
   ) { }
 
   /* =========================
      INIT
   ========================== */
   async initialize(): Promise<void> {
-    if (this.initialized) return;
-
-    console.log('⏳ Loading embedding model:', this.modelName);
-    this.extractor = await pipeline('feature-extraction', this.modelName);
-    this.initialized = true;
-    console.log('✓ Embedding model loaded');
+    this.openaiBaseUrl = (this.openaiBaseUrlOverride || 'https://api.openai.com').replace(/\/+$/, '');
+    this.openaiTimeoutMs = this.openaiTimeoutMsOverride ?? 60_000;
+    console.log('✓ Embedding provider: OpenAI');
+    console.log('✓ Embedding model:', this.openaiEmbeddingModel);
   }
 
   /* =========================
      SINGLE EMBEDDING
   ========================== */
   async generateEmbedding(text: string): Promise<number[]> {
-    if (!this.initialized) {
-      await this.initialize();
-    }
-
-    const clean = this.preprocess(text);
-
-    const output = await this.extractor(clean, {
-      pooling: 'mean',
-      normalize: false, // ❗ QUAN TRỌNG
-      truncation: true,
-      max_length: 512,
-    });
-
-    return Array.from(output.data as Float32Array);
+    const [embedding] = await this.generateBatchEmbeddings([text]);
+    return embedding;
   }
 
   /* =========================
      BATCH
   ========================== */
   async generateBatchEmbeddings(texts: string[]): Promise<number[][]> {
-    const results: number[][] = [];
-    for (const t of texts) {
-      results.push(await this.generateEmbedding(t));
+    if (!this.openaiBaseUrl || !this.openaiTimeoutMs) {
+      await this.initialize();
     }
-    return results;
+
+    const inputs = texts.map(t => this.preprocess(String(t || '')));
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.openaiTimeoutMs);
+
+    try {
+      const res = await fetch(`${this.openaiBaseUrl}/v1/embeddings`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this.openaiApiKey}`
+        },
+        body: JSON.stringify({
+          model: this.openaiEmbeddingModel,
+          input: inputs
+        }),
+        signal: controller.signal
+      });
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`OpenAI embeddings error (${res.status}): ${text || res.statusText}`);
+      }
+
+      const data: any = await res.json();
+      const items: any[] = Array.isArray(data?.data) ? data.data : [];
+
+      // OpenAI returns embeddings with an index, but order matches input. Be defensive anyway.
+      const byIndex = new Map<number, number[]>();
+      for (const item of items) {
+        if (typeof item?.index === 'number' && Array.isArray(item?.embedding)) {
+          byIndex.set(item.index, item.embedding);
+        }
+      }
+
+      const results: number[][] = [];
+      for (let i = 0; i < inputs.length; i++) {
+        const embedding = byIndex.get(i);
+        if (!embedding) {
+          throw new Error(`Missing embedding for input index ${i}`);
+        }
+        results.push(embedding);
+      }
+
+      return results;
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   /* =========================

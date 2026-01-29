@@ -75,7 +75,9 @@ export interface CurriculumMetadata {
 
 export type DocumentMetadata = SyllabusMetadata | RegulationMetadata | CurriculumMetadata;
 
-const VECTOR_DIM = 768;
+// OpenAI embeddings are 1536 dims for `text-embedding-3-small` (default in this repo).
+// If you change the embedding model, update this constant and re-create/migrate the DB column accordingly.
+const VECTOR_DIM = 1536;
 
 export class DatabaseModel {
   private pool: Pool;
@@ -129,6 +131,31 @@ export class DatabaseModel {
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
       `);
+
+      // Detect existing vector dimension in a robust way.
+      // Prefer parsing `format_type(...)` (e.g. "vector(1536)") to avoid typmod quirks.
+      const dimResult = await client.query(`
+        SELECT
+          format_type(a.atttypid, a.atttypmod) AS formatted_type,
+          a.atttypmod AS typmod
+        FROM pg_attribute a
+        JOIN pg_class c ON c.oid = a.attrelid
+        WHERE c.relname = 'chunks'
+          AND a.attname = 'embedding'
+          AND a.attnum > 0
+          AND NOT a.attisdropped
+        LIMIT 1
+      `);
+
+      const formattedType = String(dimResult.rows?.[0]?.formatted_type || '');
+      const match = formattedType.match(/vector\((\d+)\)/i);
+      const existingDim = match ? Number(match[1]) : Number(dimResult.rows?.[0]?.typmod || 0);
+      if (existingDim && existingDim !== VECTOR_DIM) {
+        throw new Error(
+          `Vector dimension mismatch: DB has ${existingDim} but app expects ${VECTOR_DIM}. ` +
+          `You need to migrate the chunks.embedding column (or drop/recreate tables) and re-ingest.`
+        );
+      }
 
       // ============================================
       // INDEXES

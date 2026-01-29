@@ -38,8 +38,16 @@ export async function createApp(): Promise<Express> {
   
   const minio = new MinIOModel();
   
+  const openaiApiKey = process.env.OPENAI_API_KEY;
+  if (!openaiApiKey) {
+    throw new Error('Missing required env var: OPENAI_API_KEY');
+  }
+
   const embeddingService = new EmbeddingService(
-    process.env.EMBEDDING_MODEL
+    openaiApiKey,
+    process.env.OPENAI_EMBEDDING_MODEL || 'text-embedding-3-small',
+    process.env.OPENAI_BASE_URL,
+    process.env.OPENAI_TIMEOUT_MS ? Number(process.env.OPENAI_TIMEOUT_MS) : undefined
   );
   await embeddingService.initialize();
   
@@ -48,8 +56,10 @@ export async function createApp(): Promise<Express> {
   const ragService = new RAGService(
     db,
     embeddingService,
-    process.env.OLLAMA_HOST!,
-    process.env.OLLAMA_MODEL!
+    openaiApiKey,
+    process.env.OPENAI_CHAT_MODEL || process.env.OPENAI_MODEL || 'gpt-4o-mini',
+    process.env.OPENAI_BASE_URL,
+    process.env.OPENAI_TIMEOUT_MS ? Number(process.env.OPENAI_TIMEOUT_MS) : undefined
   );
 
   // Initialize controllers

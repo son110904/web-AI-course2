@@ -55,7 +55,7 @@ export class UploadController {
 
         const embedding = await this.embeddingService.generateEmbedding(chunkText);
 
-        if (embedding.length !== 768) {
+        if (embedding.length !== 1536) {
           throw new Error(`Embedding dimension invalid: ${embedding.length}`);
         }
 

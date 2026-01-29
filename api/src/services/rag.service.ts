@@ -1,23 +1,31 @@
-import { Ollama } from 'ollama';
 import { DatabaseModel, SearchResult, ChatMessage } from '../models/database.model';
 import { EmbeddingService } from './embedding.service';
 
+type OpenAIChatMessage = {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+};
+
 export class RAGService {
-  private ollama: Ollama;
+  private openaiBaseUrl: string;
+  private openaiTimeoutMs: number;
 
   constructor(
     private db: DatabaseModel,
     private embeddingService: EmbeddingService,
-    ollamaHost: string,
-    private ollamaModel: string
+    private openaiApiKey: string,
+    private openaiChatModel: string,
+    openaiBaseUrl?: string,
+    openaiTimeoutMs?: number
   ) {
-    this.ollama = new Ollama({ host: ollamaHost });
+    this.openaiBaseUrl = (openaiBaseUrl || 'https://api.openai.com').replace(/\/+$/, '');
+    this.openaiTimeoutMs = openaiTimeoutMs ?? 60_000;
   }
 
   /* =====================================================
      MAIN ENTRY - Metadata-aware
   ====================================================== */
-  async chat(messages: ChatMessage[]): Promise<string> {
+  async chat(messages: ChatMessage[], expandedQueries?: string[] | null): Promise<string> {
     const userMessage = messages.filter(m => m.role === 'user').pop();
     if (!userMessage) {
       return 'Không có câu hỏi hợp lệ.';
@@ -31,21 +39,39 @@ export class RAGService {
     const filters = this.detectQueryIntent(query);
     console.log('🎯 Detected filters:', filters);
 
-    // 2. Generate embedding
-    const embedding = await this.embeddingService.generateEmbedding(query);
+    // 2. Generate embeddings (query + optional expanded queries)
+    const candidateQueries = [query, ...(expandedQueries || [])]
+      .map(q => String(q || '').trim())
+      .filter(Boolean)
+      .slice(0, 5); // keep it bounded
 
-    // 3. Search với metadata filters
-    const rawChunks = await this.db.searchSimilarChunks(
-      embedding,
-      15,
-      filters
-    );
+    const rawChunksById = new Map<string, SearchResult>();
+    let embeddingForFollowups: number[] | null = null;
+
+    for (const candidate of candidateQueries) {
+      const embedding = await this.embeddingService.generateEmbedding(candidate);
+      if (!embeddingForFollowups && candidate === query) {
+        embeddingForFollowups = embedding;
+      }
+
+      const results = await this.db.searchSimilarChunks(embedding, 15, filters);
+      for (const r of results) {
+        if (!rawChunksById.has(r.chunk_id)) {
+          rawChunksById.set(r.chunk_id, r);
+        }
+      }
+    }
+
+    // Default to the original query embedding for later expansions (syllabus → subject search)
+    const embedding = embeddingForFollowups ?? (await this.embeddingService.generateEmbedding(query));
+
+    const rawChunks = [...rawChunksById.values()];
 
     console.log(`📊 Retrieved ${rawChunks.length} chunks`);
 
     rawChunks.forEach((c, i) => {
       console.log(
-        `#${i + 1} | ${(c.similarity * 100).toFixed(1)}% | ${c.document_type} | ${c.metadata.source_file}`
+        `#${i + 1} | ${(c.similarity * 100).toFixed(1)}% | ${c.document_type} | ${c.metadata?.source_file}`
       );
     });
 
@@ -58,7 +84,7 @@ export class RAGService {
 
     const fileMention = this.detectMentionedSourceFile(query, reranked);
     if (fileMention) {
-      reranked = reranked.filter(c => c.metadata.source_file === fileMention);
+      reranked = reranked.filter(c => c.metadata?.source_file === fileMention);
       console.log(`INFO: Restricting to source file: ${fileMention}`);
     }
 
@@ -85,7 +111,7 @@ export class RAGService {
     console.log('\n🔁 Top 5 after re-rank:');
     reranked.slice(0, 5).forEach((c, i) => {
       console.log(
-        `#${i + 1} | ${(c.similarity * 100).toFixed(1)}% | ${c.document_type} | ${c.metadata.source_file}`
+        `#${i + 1} | ${(c.similarity * 100).toFixed(1)}% | ${c.document_type} | ${c.metadata?.source_file}`
       );
     });
 
@@ -310,7 +336,7 @@ export class RAGService {
   private buildContextWithMetadata(chunks: SearchResult[]): string {
     return chunks
       .map((c, i) => {
-        const meta = c.metadata;
+        const meta = c.metadata || ({} as any);
         let header = `[Tài liệu ${i + 1} | ${(c.similarity * 100).toFixed(0)}%]`;
 
         // Add specific metadata based on type
@@ -348,13 +374,13 @@ export class RAGService {
     // Build source list
     const sources = chunks
       .map(c => {
-        const meta = c.metadata;
+        const meta = c.metadata || ({} as any);
         if (c.document_type === 'syllabus') {
-          return `- Đề cương: ${meta.subject_name} (${meta.subject_code})`;
+          return `- Đề cương: ${meta.subject_name || 'N/A'} (${meta.subject_code || 'N/A'})`;
         } else if (c.document_type === 'regulation') {
-          return `- Quy định: ${meta.source_file}`;
+          return `- Quy định: ${meta.source_file || 'N/A'}`;
         } else {
-          return `- CTĐT: ${meta.major || meta.program_name}`;
+          return `- CTĐT: ${meta.major || meta.program_name || 'N/A'}`;
         }
       })
       .join('\n');
@@ -368,27 +394,58 @@ NGUYÊN TẮC:
 - Trích dẫn rõ nguồn (tên môn, số quyết định, v.v.).
 - Nếu không đủ thông tin để trả lời, hãy nói: "Không tìm thấy thông tin."`;
 
-    const res = await this.ollama.chat({
-      model: this.ollamaModel,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        {
-          role: 'user',
-          content: `TÀI LIỆU THAM KHẢO:\n${context}\n\nCÂU HỎI:\n${query}\n\nHãy trả lời dựa trên tài liệu trên.`
-        }
-      ],
-      stream: false,
-      options: {
-        temperature: 0.2,
-        top_p: 0.9,
-        num_ctx: 4096
-      }
-    });
+    const userContent = `TÀI LIỆU THAM KHẢO:\n${context}\n\nCÂU HỎI:\n${query}\n\nHãy trả lời dựa trên tài liệu trên.`;
 
-    const answer = res.message.content.trim();
+    const messages: OpenAIChatMessage[] = [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userContent }
+    ];
 
-    // Append sources
+    const answer = await this.openaiChat(messages, { temperature: 0.2, top_p: 0.9 });
+
+    // Keep behavior: answer only (sources available if you want to append later)
+    void sources;
     return answer;
+  }
+
+  private async openaiChat(
+    messages: OpenAIChatMessage[],
+    options: { temperature?: number; top_p?: number } = {}
+  ): Promise<string> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.openaiTimeoutMs);
+
+    try {
+      const res = await fetch(`${this.openaiBaseUrl}/v1/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this.openaiApiKey}`
+        },
+        body: JSON.stringify({
+          model: this.openaiChatModel,
+          messages,
+          temperature: options.temperature ?? 0.2,
+          top_p: options.top_p ?? 0.9
+        }),
+        signal: controller.signal
+      });
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`OpenAI error (${res.status}): ${text || res.statusText}`);
+      }
+
+      const data: any = await res.json();
+      const content = data?.choices?.[0]?.message?.content;
+      if (typeof content !== 'string' || !content.trim()) {
+        throw new Error('OpenAI returned empty response content');
+      }
+
+      return content.trim();
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   private normalizeForMatch(text: string): string {
