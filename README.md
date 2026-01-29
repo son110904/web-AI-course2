@@ -48,10 +48,6 @@ Start infrastructure (Hãy tải phần mềm docker desktop, bật lên rồi c
 ```bash
 docker-compose up -d 
 ```
-Thiết lập OpenAI (sửa `api/.env`):
-- `OPENAI_API_KEY=...`
-- (tuỳ chọn) `OPENAI_CHAT_MODEL=gpt-4o-mini`
-
 Start API (Hệ thống tự động ingest dữ liệu từ MinIO, sau đó tiến hành embedding)
 ```bash
 npm run dev

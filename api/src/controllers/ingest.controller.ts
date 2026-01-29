@@ -83,7 +83,7 @@ export class IngestController {
               console.log(`  ✓ Document inserted: ${documentId}`);
 
               // 6. Chunk text
-              const chunks = this.documentService.chunkText(text, metadata);
+              const chunks = this.documentService.chunkText(text);
               console.log(`  ✓ Created ${chunks.length} chunks`);
 
               // 7. Embed và save chunks

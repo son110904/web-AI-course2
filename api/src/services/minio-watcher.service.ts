@@ -15,7 +15,7 @@ export class MinIOWatcherService {
 
   // NOTE: kiểm tra lại tên folder thật trong MinIO:
   // 'relegation' rất dễ là typo của 'regulation'
-  private readonly folders = ['curriculum', 'regulation', 'relegation', 'syllabus'] as const;
+  private readonly folders = ['curriculum', 'relegation', 'syllabus'] as const;
 
   private readonly intervalMs = 300000; // 5 phút
 
@@ -146,15 +146,13 @@ export class MinIOWatcherService {
 
         // 3. Save document
         const filename = objectName.split('/').pop()!;
-        const documentMetadata = this.documentService.parseMetadataFromPath(
-          objectName,
-          text
-        );
+        const { documentMetadata, chunkMetadata } =
+          this.documentService.parseMetadataFromPath(objectName);
 
         // Nếu DB của bạn có unique(file_path), nên xử lý duplicate ở đây:
         // - tốt nhất: db.upsertDocument(...) trả về documentId
         // - hoặc: nếu insertDocument fail unique -> lấy documentId theo file_path
-        let documentId: string;
+        let documentId: number;
 
         try {
           documentId = await this.db.insertDocument({
@@ -164,7 +162,35 @@ export class MinIOWatcherService {
             content_type:
               'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
             document_type: documentMetadata.document_type,
-            metadata: documentMetadata as unknown as Record<string, any>,
+            entity: documentMetadata.entity,
+            major: documentMetadata.major,
+            source_file: documentMetadata.source_file,
+            subject_name: documentMetadata.subject_name,
+            subject_code: documentMetadata.subject_code,
+            credits: documentMetadata.credits,
+            faculty: documentMetadata.faculty,
+            level: documentMetadata.level,
+            language: documentMetadata.language,
+            academic_year: documentMetadata.academic_year,
+            regulation_type: documentMetadata.regulation_type,
+            decision_number: documentMetadata.decision_number,
+            issued_year: documentMetadata.issued_year,
+            issuing_body: documentMetadata.issuing_body,
+            applicable_object: documentMetadata.applicable_object,
+            effective_status: documentMetadata.effective_status,
+            admission_year: documentMetadata.admission_year,
+            education_level: documentMetadata.education_level,
+            institution: documentMetadata.institution,
+            applicable_major: documentMetadata.applicable_major,
+            program_name: documentMetadata.program_name,
+            major_code: documentMetadata.major_code,
+            degree: documentMetadata.degree,
+            total_credits: documentMetadata.total_credits,
+            training_duration: documentMetadata.training_duration,
+            admission_from_year: documentMetadata.admission_from_year,
+            issuing_decision: documentMetadata.issuing_decision,
+            issuing_date: documentMetadata.issuing_date,
+            managing_unit: documentMetadata.managing_unit,
           });
         } catch (e: any) {
           // ✅ CHỐT: Không retry vô hạn với lỗi duplicate.
@@ -181,7 +207,7 @@ export class MinIOWatcherService {
 
         // 4. Chunk & Embed
         const chunks = this.documentService
-          .chunkText(text, documentMetadata)
+          .chunkText(text)
           .map(c => c.trim())
           .filter(Boolean);
 
@@ -195,6 +221,36 @@ export class MinIOWatcherService {
             content: chunks[i],
             chunk_index: i,
             embedding,
+            document_type: chunkMetadata.document_type,
+            entity: chunkMetadata.entity,
+            major: chunkMetadata.major,
+            source_file: chunkMetadata.source_file,
+            subject_name: chunkMetadata.subject_name,
+            subject_code: chunkMetadata.subject_code,
+            credits: chunkMetadata.credits,
+            faculty: chunkMetadata.faculty,
+            level: chunkMetadata.level,
+            language: chunkMetadata.language,
+            academic_year: chunkMetadata.academic_year,
+            regulation_type: chunkMetadata.regulation_type,
+            decision_number: chunkMetadata.decision_number,
+            issued_year: chunkMetadata.issued_year,
+            issuing_body: chunkMetadata.issuing_body,
+            applicable_object: chunkMetadata.applicable_object,
+            effective_status: chunkMetadata.effective_status,
+            admission_year: chunkMetadata.admission_year,
+            education_level: chunkMetadata.education_level,
+            institution: chunkMetadata.institution,
+            applicable_major: chunkMetadata.applicable_major,
+            program_name: chunkMetadata.program_name,
+            major_code: chunkMetadata.major_code,
+            degree: chunkMetadata.degree,
+            total_credits: chunkMetadata.total_credits,
+            training_duration: chunkMetadata.training_duration,
+            admission_from_year: chunkMetadata.admission_from_year,
+            issuing_decision: chunkMetadata.issuing_decision,
+            issuing_date: chunkMetadata.issuing_date,
+            managing_unit: chunkMetadata.managing_unit,
           });
 
           if ((i + 1) % 10 === 0 || i === chunks.length - 1) {
