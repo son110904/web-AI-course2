@@ -25,24 +25,9 @@ export class ChatController {
       }));
 
       /**
-       * 🔹 QUERY EXPANSION
-       * Chỉ expand message cuối (user question)
-       */
-      const lastMessage = validMessages[validMessages.length - 1];
-      let expandedQueries: string[] | null = null;
-
-      if (lastMessage.role === 'user') {
-        expandedQueries = expandQuery(lastMessage.content);
-      }
-
-      /**
        * Gọi RAG service
-       * expandedQueries được truyền xuống để retriever dùng
        */
-      const botMessage = await this.ragService.chat(
-        validMessages,
-        expandedQueries
-      );
+      const botMessage = await this.ragService.chat(validMessages);
 
       res.json({ botMessage });
     } catch (error) {
@@ -58,6 +43,13 @@ export class ChatController {
    */
   async ask(req: Request, res: Response): Promise<void> {
     try {
+      // Support the UI chat payload too: { messages: [{ role, content }, ...] }
+      // This effectively merges /api/chat into /api/demo_agent/v1/ask.
+      if (Array.isArray(req.body?.messages)) {
+        await this.chat(req, res);
+        return;
+      }
+
       const { session_id, model_id, user, prompt, context } = req.body;
 
       if (!session_id || !model_id || !user || !prompt) {
@@ -81,16 +73,8 @@ export class ChatController {
         },
       ];
 
-      /**
-       * 🔹 QUERY EXPANSION cho câu hỏi hiện tại
-       */
-      const expandedQueries = expandQuery(prompt);
-
       const startTime = Date.now();
-      const content = await this.ragService.chat(
-        messages,
-        expandedQueries
-      );
+      const content = await this.ragService.chat(messages);
       const responseTimeMs = Date.now() - startTime;
 
       res.json({

@@ -45,7 +45,7 @@ export class UploadController {
       });
 
       //  Chunk text - đoạn này HA sửa theo metadata từng chunk đã thiết lập mới
-      const chunks = this.documentService.chunkText(text);
+      const chunks = this.documentService.chunkText(text, metadata);
 
 
       // Embed + insert chunks - HA cũng sửa vòng for

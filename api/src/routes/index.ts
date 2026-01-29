@@ -15,7 +15,7 @@ export function createRoutes(
   });
   
   router.post('/api/chat', (req, res) =>
-    chatController.chat(req, res)
+    chatController.ask(req, res)
   );
 
   router.post('/api/demo_agent/v1/ask', (req, res) =>

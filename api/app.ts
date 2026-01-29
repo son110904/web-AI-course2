@@ -45,11 +45,18 @@ export async function createApp(): Promise<Express> {
   
   const documentService = new DocumentService();
   
+  const openaiApiKey = process.env.OPENAI_API_KEY;
+  if (!openaiApiKey) {
+    throw new Error('Missing required env var: OPENAI_API_KEY');
+  }
+
   const ragService = new RAGService(
     db,
     embeddingService,
-    process.env.OLLAMA_HOST!,
-    process.env.OLLAMA_MODEL!
+    openaiApiKey,
+    process.env.OPENAI_CHAT_MODEL || process.env.OPENAI_MODEL || 'gpt-4o-mini',
+    process.env.OPENAI_BASE_URL,
+    process.env.OPENAI_TIMEOUT_MS ? Number(process.env.OPENAI_TIMEOUT_MS) : undefined
   );
 
   // Initialize controllers

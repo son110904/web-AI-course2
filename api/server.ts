@@ -13,7 +13,7 @@ async function startServer() {
       console.log(`✓ Port: ${PORT}`);
       console.log(`✓ Environment: ${process.env.NODE_ENV || 'development'}`);
       console.log(`✓ Health: http://localhost:${PORT}/health`);
-      console.log(`✓ Chat: http://localhost:${PORT}/api/chat`);
+      console.log(`✓ Ask: http://localhost:${PORT}/api/demo_agent/v1/ask`);
       console.log('\n🎉 Ready!\n');
     });
 
