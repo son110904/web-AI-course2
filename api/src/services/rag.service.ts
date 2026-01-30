@@ -1,5 +1,6 @@
 import { DatabaseModel, SearchResult, ChatMessage } from '../models/database.model';
 import { EmbeddingService } from './embedding.service';
+import { NeighborChunkService } from './neighbor-chunk.service';
 
 type OpenAIChatMessage = {
   role: 'system' | 'user' | 'assistant';
@@ -9,6 +10,7 @@ type OpenAIChatMessage = {
 export class RAGService {
   private openaiBaseUrl: string;
   private openaiTimeoutMs: number;
+  private neighborChunkService: NeighborChunkService;
 
   constructor(
     private db: DatabaseModel,
@@ -20,6 +22,7 @@ export class RAGService {
   ) {
     this.openaiBaseUrl = (openaiBaseUrl || 'https://api.openai.com').replace(/\/+$/, '');
     this.openaiTimeoutMs = openaiTimeoutMs ?? 60_000;
+    this.neighborChunkService = new NeighborChunkService(db);
   }
 
   /* =====================================================
@@ -133,8 +136,15 @@ export class RAGService {
       return this.noContext();
     }
 
-    // 6. Build context
-    const context = this.buildContextWithMetadata(selectedChunks);
+    // 6. Expand neighbor chunks (more complete context)
+    const neighborWindow = Math.max(
+      0,
+      Number.parseInt(process.env.NEIGHBOR_CHUNK_WINDOW || '1', 10) || 1
+    );
+    const expandedChunks = await this.neighborChunkService.expand(selectedChunks, neighborWindow);
+
+    // 7. Build context
+    const context = this.buildContextWithMetadata(expandedChunks);
 
     console.log('\n🧠 CONTEXT LENGTH:', context.length);
 
@@ -142,8 +152,8 @@ export class RAGService {
       return this.noContext();
     }
 
-    // 7. Generate response
-    return await this.generateResponse(query, context, selectedChunks);
+    // 8. Generate response
+    return await this.generateResponse(query, context, expandedChunks);
   }
 
   /* =====================================================

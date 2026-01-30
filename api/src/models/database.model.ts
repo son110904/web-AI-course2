@@ -306,6 +306,47 @@ export class DatabaseModel {
   }
 
   // ============================================
+  // GET CHUNKS IN RANGES (neighbor expansion)
+  // ============================================
+  async getChunksInRanges(
+    ranges: Array<{ document_id: string; start_index: number; end_index: number }>
+  ): Promise<SearchResult[]> {
+    if (ranges.length === 0) return [];
+
+    const params: any[] = [];
+    const valuesSql = ranges
+      .map((r, i) => {
+        const base = i * 3;
+        params.push(r.document_id, r.start_index, r.end_index);
+        return `($${base + 1}::uuid, $${base + 2}::int, $${base + 3}::int)`;
+      })
+      .join(', ');
+
+    const query = `
+      WITH ranges(document_id, start_index, end_index) AS (
+        VALUES ${valuesSql}
+      )
+      SELECT
+        c.id AS chunk_id,
+        c.document_id,
+        c.content,
+        0::float8 AS similarity,
+        c.chunk_index,
+        d.document_type,
+        d.metadata
+      FROM chunks c
+      JOIN documents d ON d.id = c.document_id
+      JOIN ranges r
+        ON r.document_id = c.document_id
+       AND c.chunk_index BETWEEN r.start_index AND r.end_index
+      ORDER BY c.document_id, c.chunk_index
+    `;
+
+    const result = await this.pool.query(query, params);
+    return result.rows;
+  }
+
+  // ============================================
   // STATS
   // ============================================
   async getIngestStats() {
