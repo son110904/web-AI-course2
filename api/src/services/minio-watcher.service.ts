@@ -146,13 +146,10 @@ export class MinIOWatcherService {
 
         // 3. Save document
         const filename = objectName.split('/').pop()!;
-        const { documentMetadata, chunkMetadata } =
-          this.documentService.parseMetadataFromPath(objectName);
+        const documentMetadata = this.documentService.parseMetadataFromPath(objectName);
 
-        // Nếu DB của bạn có unique(file_path), nên xử lý duplicate ở đây:
-        // - tốt nhất: db.upsertDocument(...) trả về documentId
-        // - hoặc: nếu insertDocument fail unique -> lấy documentId theo file_path
-        let documentId: number;
+        // Nếu DB có unique(file_path), có thể xử lý duplicate: db.getDocumentIdByPath(objectName)
+        let documentId: string;
 
         try {
           documentId = await this.db.insertDocument({
@@ -162,46 +159,11 @@ export class MinIOWatcherService {
             content_type:
               'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
             document_type: documentMetadata.document_type,
-            entity: documentMetadata.entity,
-            major: documentMetadata.major,
-            source_file: documentMetadata.source_file,
-            subject_name: documentMetadata.subject_name,
-            subject_code: documentMetadata.subject_code,
-            credits: documentMetadata.credits,
-            faculty: documentMetadata.faculty,
-            level: documentMetadata.level,
-            language: documentMetadata.language,
-            academic_year: documentMetadata.academic_year,
-            regulation_type: documentMetadata.regulation_type,
-            decision_number: documentMetadata.decision_number,
-            issued_year: documentMetadata.issued_year,
-            issuing_body: documentMetadata.issuing_body,
-            applicable_object: documentMetadata.applicable_object,
-            effective_status: documentMetadata.effective_status,
-            admission_year: documentMetadata.admission_year,
-            education_level: documentMetadata.education_level,
-            institution: documentMetadata.institution,
-            applicable_major: documentMetadata.applicable_major,
-            program_name: documentMetadata.program_name,
-            major_code: documentMetadata.major_code,
-            degree: documentMetadata.degree,
-            total_credits: documentMetadata.total_credits,
-            training_duration: documentMetadata.training_duration,
-            admission_from_year: documentMetadata.admission_from_year,
-            issuing_decision: documentMetadata.issuing_decision,
-            issuing_date: documentMetadata.issuing_date,
-            managing_unit: documentMetadata.managing_unit,
+            metadata: { ...documentMetadata },
           });
-        } catch (e: any) {
-          // ✅ CHỐT: Không retry vô hạn với lỗi duplicate.
-          // Bạn nên thay bằng check error code unique của driver DB bạn dùng.
-          // Ví dụ: if (e.code === 'SQLITE_CONSTRAINT' || e.code === '23505') ...
-          //
-          // Nếu bạn có method này, dùng:
-          // documentId = await this.db.getDocumentIdByPath(objectName);
-          //
-          // Nếu chưa có, tạm thời throw để bạn bổ sung method cho chuẩn.
-          console.error('❌ insertDocument failed (maybe duplicate). Consider upsert/get-by-path.', e?.message);
+        } catch (e: unknown) {
+          const msg = e instanceof Error ? e.message : String(e);
+          console.error('❌ insertDocument failed (maybe duplicate). Consider upsert/get-by-path.', msg);
           throw e;
         }
 
@@ -221,36 +183,6 @@ export class MinIOWatcherService {
             content: chunks[i],
             chunk_index: i,
             embedding,
-            document_type: chunkMetadata.document_type,
-            entity: chunkMetadata.entity,
-            major: chunkMetadata.major,
-            source_file: chunkMetadata.source_file,
-            subject_name: chunkMetadata.subject_name,
-            subject_code: chunkMetadata.subject_code,
-            credits: chunkMetadata.credits,
-            faculty: chunkMetadata.faculty,
-            level: chunkMetadata.level,
-            language: chunkMetadata.language,
-            academic_year: chunkMetadata.academic_year,
-            regulation_type: chunkMetadata.regulation_type,
-            decision_number: chunkMetadata.decision_number,
-            issued_year: chunkMetadata.issued_year,
-            issuing_body: chunkMetadata.issuing_body,
-            applicable_object: chunkMetadata.applicable_object,
-            effective_status: chunkMetadata.effective_status,
-            admission_year: chunkMetadata.admission_year,
-            education_level: chunkMetadata.education_level,
-            institution: chunkMetadata.institution,
-            applicable_major: chunkMetadata.applicable_major,
-            program_name: chunkMetadata.program_name,
-            major_code: chunkMetadata.major_code,
-            degree: chunkMetadata.degree,
-            total_credits: chunkMetadata.total_credits,
-            training_duration: chunkMetadata.training_duration,
-            admission_from_year: chunkMetadata.admission_from_year,
-            issuing_decision: chunkMetadata.issuing_decision,
-            issuing_date: chunkMetadata.issuing_date,
-            managing_unit: chunkMetadata.managing_unit,
           });
 
           if ((i + 1) % 10 === 0 || i === chunks.length - 1) {
@@ -259,8 +191,9 @@ export class MinIOWatcherService {
         }
 
         console.log(`✅ Ingested successfully: ${filename}`);
-      } catch (error: any) {
-        console.error(`❌ Failed ingest ${objectName}`, error?.message);
+      } catch (error: unknown) {
+        const msg = error instanceof Error ? error.message : String(error);
+        console.error(`❌ Failed ingest ${objectName}`, msg);
 
         // retry lần sau (hợp lý cho lỗi tạm thời: network/minio/extract)
         // nhưng nếu lỗi là duplicate DB, bạn nên xử lý ở catch insertDocument để không rơi vào đây mãi

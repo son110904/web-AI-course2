@@ -1,7 +1,6 @@
 import pdfParse from 'pdf-parse';
 import mammoth from 'mammoth';
 import * as XLSX from 'xlsx';
-import { DocumentMetadata } from '../models/database.model';
 
 export class DocumentService {
   async extractText(buffer: Buffer, filename: string): Promise<string> {
@@ -48,10 +47,10 @@ export class DocumentService {
   }
 
   // ========================================
-  // METADATA PARSING - FULL VERSION
+  // METADATA PARSING - Returns single metadata object
   // ========================================
 
-  parseMetadataFromPath(filePath: string, fileContent?: string): DocumentMetadata {
+  parseMetadataFromPath(filePath: string, fileContent?: string): Record<string, any> {
     const normalized = filePath.replace(/\\/g, '/');
     const parts = normalized.split('/');
     const filename = parts.pop() || normalized;
@@ -78,7 +77,7 @@ export class DocumentService {
   // ========================================
   // SYLLABUS METADATA
   // ========================================
-  private parseSyllabusMetadata(filename: string, content?: string): DocumentMetadata {
+  private parseSyllabusMetadata(filename: string, content?: string): Record<string, any> {
     const cleanName = filename.replace('.docx', '').trim();
     
     // Parse pattern: "Tên học phần_Mã môn"
@@ -103,7 +102,7 @@ export class DocumentService {
   // ========================================
   // CURRICULUM METADATA
   // ========================================
-  private parseCurriculumMetadata(filename: string, content?: string): DocumentMetadata {
+  private parseCurriculumMetadata(filename: string, content?: string): Record<string, any> {
     const cleanName = filename.replace('.docx', '').toLowerCase();
     const major = this.detectMajorFull(cleanName);
 
@@ -127,7 +126,7 @@ export class DocumentService {
   // ========================================
   // REGULATION METADATA
   // ========================================
-  private parseRegulationMetadata(filename: string, content?: string): DocumentMetadata {
+  private parseRegulationMetadata(filename: string, content?: string): Record<string, any> {
     const cleanName = filename.replace('.docx', '').toLowerCase();
     
     // Kiểm tra loại regulation
@@ -372,4 +371,3 @@ export class DocumentService {
     return chunks;
   }
 }
-

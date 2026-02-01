@@ -179,6 +179,12 @@ export class DatabaseModel {
         ON documents USING gin(metadata)
       `);
 
+      // 🆕 Full-text search index for content
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS chunks_content_idx 
+        ON chunks USING gin(to_tsvector('simple', content))
+      `);
+
       console.log('✓ Database initialized with full metadata support');
     } finally {
       client.release();
@@ -303,6 +309,196 @@ export class DatabaseModel {
 
     const result = await this.pool.query(query, params);
     return result.rows;
+  }
+
+  // ============================================
+  // 🆕 SEARCH BY INSTRUCTOR NAME (TEACHING SECTION ONLY)
+  // ============================================
+  /**
+   * Search for syllabus chunks that mention an instructor's name
+   * ONLY in the "Giảng viên giảng dạy học phần" section
+   * to avoid false positives from dean signatures, editors, etc.
+   */
+  async searchByInstructor(
+    instructorName: string,
+    options?: {
+      document_type?: string;
+      limit?: number;
+    }
+  ): Promise<SearchResult[]> {
+    const normalizedName = this.normalizeVietnamese(instructorName);
+    
+    const limit = options?.limit || 50;
+    const docType = options?.document_type || 'syllabus';
+
+    // 🎯 STRATEGY: Tìm chunks có cả:
+    // 1. Instructor name
+    // 2. Teaching-related keywords (giảng viên, giảng dạy, phụ trách, etc.)
+    // Điều này giúp loại bỏ mentions trong signature/approval sections
+
+    const query = `
+      SELECT DISTINCT ON (d.metadata->>'subject_code', d.metadata->>'subject_name')
+        c.id AS chunk_id,
+        c.document_id,
+        c.content,
+        c.chunk_index,
+        1.0 AS similarity,
+        d.document_type,
+        d.metadata
+      FROM chunks c
+      JOIN documents d ON d.id = c.document_id
+      WHERE 
+        d.document_type = $1
+        AND (
+          -- Must contain instructor name
+          c.content ILIKE $2
+        )
+        AND (
+          -- Must be in teaching context (not signature/approval)
+          c.content ILIKE '%giảng viên giảng dạy%'
+          OR c.content ILIKE '%giảng viên phụ trách%'
+          OR c.content ILIKE '%người giảng dạy%'
+          OR c.content ILIKE '%teaching staff%'
+          OR c.content ILIKE '%instructor%'
+          OR (
+            c.content ILIKE '%giảng viên%'
+            AND (
+              c.content ILIKE '%học phần%'
+              OR c.content ILIKE '%môn học%'
+              OR c.content ILIKE '%subject%'
+            )
+          )
+        )
+        -- Exclude approval/signature sections
+        AND c.content NOT ILIKE '%trưởng khoa ký duyệt%'
+        AND c.content NOT ILIKE '%ban biên soạn%'
+        AND c.content NOT ILIKE '%phê duyệt%'
+        AND c.content NOT ILIKE '%xác nhận%'
+        AND c.content NOT ILIKE '%dean approval%'
+      ORDER BY 
+        d.metadata->>'subject_code',
+        d.metadata->>'subject_name',
+        c.chunk_index
+      LIMIT $3
+    `;
+
+    const params = [
+      docType,
+      `%${normalizedName}%`,
+      limit
+    ];
+
+    try {
+      const result = await this.pool.query(query, params);
+      console.log(`📚 Found ${result.rows.length} teaching chunks for instructor: ${instructorName}`);
+      
+      // Debug: Log sample content to verify context
+      if (result.rows.length > 0) {
+        const sample = result.rows[0].content.substring(0, 200);
+        console.log(`📄 Sample chunk: ${sample}...`);
+      }
+      
+      return result.rows;
+    } catch (error: any) {
+      console.error('❌ Error in searchByInstructor:', error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * 🆕 ALTERNATIVE: Two-pass search for better accuracy
+   * Pass 1: Find chunks with "Giảng viên giảng dạy" section marker
+   * Pass 2: In those documents, find chunks with instructor name nearby
+   */
+  async searchByInstructorTwoPass(
+    instructorName: string,
+    options?: {
+      document_type?: string;
+      limit?: number;
+    }
+  ): Promise<SearchResult[]> {
+    const normalizedName = this.normalizeVietnamese(instructorName);
+    const limit = options?.limit || 50;
+    const docType = options?.document_type || 'syllabus';
+
+    // Pass 1: Find documents with teaching section
+    const documentsWithTeachingSection = await this.pool.query(`
+      SELECT DISTINCT d.id
+      FROM chunks c
+      JOIN documents d ON d.id = c.document_id
+      WHERE 
+        d.document_type = $1
+        AND (
+          c.content ILIKE '%giảng viên giảng dạy học phần%'
+          OR c.content ILIKE '%giảng viên phụ trách%'
+        )
+    `, [docType]);
+
+    if (documentsWithTeachingSection.rows.length === 0) {
+      console.log('⚠️ No documents with teaching section found');
+      return [];
+    }
+
+    const docIds = documentsWithTeachingSection.rows.map(r => r.id);
+
+    // Pass 2: In those documents, find chunks with instructor name
+    // within a few chunks of the teaching section marker
+    const query = `
+      WITH teaching_chunks AS (
+        SELECT 
+          c.document_id,
+          c.chunk_index as teaching_index
+        FROM chunks c
+        WHERE 
+          c.document_id = ANY($1::uuid[])
+          AND (
+            c.content ILIKE '%giảng viên giảng dạy%'
+            OR c.content ILIKE '%giảng viên phụ trách%'
+          )
+      )
+      SELECT DISTINCT ON (d.metadata->>'subject_code', d.metadata->>'subject_name')
+        c.id AS chunk_id,
+        c.document_id,
+        c.content,
+        c.chunk_index,
+        1.0 AS similarity,
+        d.document_type,
+        d.metadata
+      FROM chunks c
+      JOIN documents d ON d.id = c.document_id
+      JOIN teaching_chunks tc ON tc.document_id = c.document_id
+      WHERE 
+        c.content ILIKE $2
+        -- Must be within 3 chunks of teaching section marker
+        AND ABS(c.chunk_index - tc.teaching_index) <= 3
+        -- Exclude approval sections
+        AND c.content NOT ILIKE '%trưởng khoa%'
+        AND c.content NOT ILIKE '%phê duyệt%'
+      ORDER BY 
+        d.metadata->>'subject_code',
+        d.metadata->>'subject_name',
+        c.chunk_index
+      LIMIT $3
+    `;
+
+    const result = await this.pool.query(query, [
+      docIds,
+      `%${normalizedName}%`,
+      limit
+    ]);
+
+    console.log(`📚 Two-pass search found ${result.rows.length} teaching chunks for: ${instructorName}`);
+    
+    return result.rows;
+  }
+
+  /**
+   * Helper: Normalize Vietnamese text for search
+   */
+  private normalizeVietnamese(text: string): string {
+    return text
+      .toLowerCase()
+      .trim();
   }
 
   // ============================================

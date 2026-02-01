@@ -320,11 +320,7 @@ const ALL_SYNONYMS: Record<string, string[]> = {
     ...QUERY_SYNONYMS
 };
 
-/**
- * Mở rộng query với các từ đồng nghĩa
- * @param query - Câu truy vấn gốc
- * @returns Mảng các query đã được mở rộng
- */
+
 export function expandQuery(query: string): string[] {
     const expanded = new Set<string>();
     expanded.add(query);
@@ -358,22 +354,12 @@ function escapeRegExp(value: string): string {
     return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-/**
- * Lấy tất cả từ đồng nghĩa của một từ khóa
- * @param keyword - Từ khóa cần tìm
- * @returns Mảng các từ đồng nghĩa
- */
+
 export function getSynonyms(keyword: string): string[] {
     const lowerKeyword = keyword.toLowerCase();
     return ALL_SYNONYMS[lowerKeyword] || [];
 }
 
-/**
- * Kiểm tra xem query có chứa từ khóa nào không
- * @param query - Câu truy vấn
- * @param keywords - Danh sách từ khóa cần kiểm tra
- * @returns true nếu query chứa ít nhất một từ khóa
- */
 export function containsKeywords(query: string, keywords: string[]): boolean {
     const lowerQuery = query.toLowerCase();
     return keywords.some(keyword => lowerQuery.includes(keyword.toLowerCase()));

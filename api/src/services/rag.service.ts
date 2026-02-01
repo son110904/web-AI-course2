@@ -26,7 +26,7 @@ export class RAGService {
   }
 
   /* =====================================================
-     MAIN ENTRY - Metadata-aware
+     MAIN ENTRY - Metadata-aware + Hybrid Search
   ====================================================== */
   async chat(messages: ChatMessage[], expandedQueries?: string[] | null): Promise<string> {
     const userMessage = messages.filter(m => m.role === 'user').pop();
@@ -42,7 +42,40 @@ export class RAGService {
     const filters = this.detectQueryIntent(query);
     console.log('🎯 Detected filters:', filters);
 
-    // 2. Generate embeddings (query + optional expanded queries)
+    // 🆕 2. HYBRID APPROACH: Check for teaching list query
+    if (filters.query_type === 'teaching_list') {
+      const instructorName = this.extractInstructorName(query);
+      
+      if (instructorName) {
+        console.log(`🎓 Teaching list query detected for: ${instructorName}`);
+        
+        // Try TWO-PASS search first (more accurate)
+        let metadataResults = await this.db.searchByInstructorTwoPass(
+          instructorName,
+          { document_type: 'syllabus', limit: 50 }
+        );
+        
+        // Fallback to single-pass if two-pass returns nothing
+        if (metadataResults.length === 0) {
+          console.log('⚠️ Two-pass search returned 0, trying single-pass...');
+          metadataResults = await this.db.searchByInstructor(
+            instructorName,
+            { document_type: 'syllabus', limit: 50 }
+          );
+        }
+        
+        // If we found >= 2 subjects from metadata → Direct response
+        if (metadataResults.length >= 2) {
+          console.log(`✅ Found ${metadataResults.length} subjects via metadata search`);
+          return await this.buildTeachingListResponse(instructorName, metadataResults);
+        }
+        
+        // If < 2 subjects → Fallback to semantic search with high chunk limit
+        console.log(`⚠️ Metadata search insufficient (${metadataResults.length} results), using semantic search`);
+      }
+    }
+
+    // 3. Generate embeddings (query + optional expanded queries)
     const candidateQueries = [query, ...(expandedQueries || [])]
       .map(q => String(q || '').trim())
       .filter(Boolean)
@@ -128,9 +161,21 @@ export class RAGService {
       return this.noContext();
     }
 
-    const selectedChunks = expandedBySubject
-      ? reranked.slice(0, 8)
-      : reranked.filter(c => c.similarity >= MIN_CHUNK).slice(0, 4);
+    // 🆕 Dynamic chunk selection based on query type
+    let chunkLimit = 4; // default
+    
+    if (filters.query_type === 'teaching_list') {
+      chunkLimit = 20; // High limit for teaching list queries
+      console.log('📚 Teaching list query → using 20 chunks');
+    } else if (expandedBySubject) {
+      chunkLimit = 8;
+    }
+
+    const selectedChunks = expandedBySubject || filters.query_type === 'teaching_list'
+      ? reranked.slice(0, chunkLimit)
+      : reranked.filter(c => c.similarity >= MIN_CHUNK).slice(0, chunkLimit);
+
+    console.log(`✅ Selected ${selectedChunks.length} chunks for context`);
 
     if (selectedChunks.length === 0) {
       return this.noContext();
@@ -153,48 +198,135 @@ export class RAGService {
     }
 
     // 8. Generate response
-    return await this.generateResponse(query, context, expandedChunks);
+    return await this.generateResponse(query, context, expandedChunks, filters.query_type);
   }
 
   /* =====================================================
-     QUERY INTENT DETECTION
+     🆕 BUILD TEACHING LIST RESPONSE (Metadata-based)
+  ====================================================== */
+  private async buildTeachingListResponse(
+    instructorName: string,
+    chunks: SearchResult[]
+  ): Promise<string> {
+    // Extract unique subjects from metadata
+    const subjectsMap = new Map<string, { name: string; code?: string }>();
+    
+    for (const chunk of chunks) {
+      const meta = chunk.metadata;
+      const subjectName = meta?.subject_name;
+      const subjectCode = meta?.subject_code;
+      
+      if (subjectName) {
+        const key = subjectCode || subjectName;
+        if (!subjectsMap.has(key)) {
+          subjectsMap.set(key, {
+            name: subjectName,
+            code: subjectCode
+          });
+        }
+      }
+    }
+
+    if (subjectsMap.size === 0) {
+      return `Không tìm thấy thông tin về các môn học mà giảng viên ${instructorName} giảng dạy trong phần "Giảng viên giảng dạy học phần".`;
+    }
+
+    // Format response
+    const subjectList = Array.from(subjectsMap.values())
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map(s => s.code ? `${s.name} (${s.code})` : s.name)
+      .map((s, i) => `${i + 1}. ${s}`)
+      .join('\n');
+
+    const disclaimer = subjectsMap.size === 1 
+      ? '\n\n_Lưu ý: Chỉ tìm thấy 1 môn học. Có thể giảng viên còn phụ trách các môn khác chưa có trong hệ thống._'
+      : '\n\n_Thông tin trích từ phần "Giảng viên giảng dạy học phần" trong các đề cương môn học._';
+
+    return `Dựa trên các đề cương môn học, giảng viên **${instructorName}** giảng dạy ${subjectsMap.size} môn:\n\n${subjectList}${disclaimer}`;
+  }
+
+  /* =====================================================
+     QUERY INTENT DETECTION (Enhanced)
   ====================================================== */
   private detectQueryIntent(query: string): {
     document_type?: string;
     metadata_filters?: Record<string, any>;
+    query_type?: 'teaching_list' | 'teaching_check' | 'general';
   } {
     const q = this.normalizeForMatch(query);
     const filters: any = {};
 
     // Detect document type
     if (
-      q.includes('đề cương') || 
-      q.includes('syllabus') || 
-      q.includes('học phần') ||
-      q.includes('môn học')
+      this.matchQueryPhrase(q, 'đề cương', 0.8) ||
+      this.matchQueryPhrase(q, 'syllabus', 1) ||
+      this.matchQueryPhrase(q, 'học phần', 0.8) ||
+      this.matchQueryPhrase(q, 'môn học', 0.8)
     ) {
       filters.document_type = 'syllabus';
     } else if (
-      q.includes('chương trình đào tạo') ||
-      q.includes('ctđt') ||
-      q.includes('curriculum')
+      this.matchQueryPhrase(q, 'chương trình đào tạo', 0.8) ||
+      this.matchQueryPhrase(q, 'ctđt', 1) ||
+      this.matchQueryPhrase(q, 'curriculum', 1)
     ) {
       filters.document_type = 'curriculum';
     } else if (
-      q.includes('quy định') ||
-      q.includes('quy chế') ||
-      q.includes('quyết định')
+      this.matchQueryPhrase(q, 'quy định', 0.8) ||
+      this.matchQueryPhrase(q, 'quy chế', 0.8) ||
+      this.matchQueryPhrase(q, 'quyết định', 0.8)
     ) {
       filters.document_type = 'regulation';
     }
 
+    // Teaching queries should lean to syllabus unless a type is already set
+    const isTeachingQuery =
+      this.matchQueryPhrase(q, 'giang vien', 0.8) ||
+      this.matchQueryPhrase(q, 'giao vien', 0.8) ||
+      this.matchQueryPhrase(q, 'thay', 1) ||
+      this.hasToken(q, 'co') ||
+      this.matchQueryPhrase(q, 'day', 1);
+
+    if (!filters.document_type && isTeachingQuery) {
+      filters.document_type = 'syllabus';
+    }
+
+    // 🆕 Detect teaching list vs teaching check queries
+    if (isTeachingQuery) {
+      const isListQuery = 
+        this.matchQueryPhrase(q, 'nhung mon', 0.7) ||
+        this.matchQueryPhrase(q, 'cac mon', 0.7) ||
+        this.matchQueryPhrase(q, 'mon nao', 0.7) ||
+        this.matchQueryPhrase(q, 'mon gi', 0.7) ||
+        q.includes('day gi') ||
+        q.includes('day nhung') ||
+        q.includes('day cac') ||
+        q.includes('phu trach mon') ||
+        q.includes('giang day');
+
+      const isCheckQuery =
+        this.matchQueryPhrase(q, 'co day', 0.8) ||
+        this.matchQueryPhrase(q, 'co phu trach', 0.8) ||
+        q.includes('co day mon') ||
+        q.includes('khong');
+
+      if (isListQuery && !isCheckQuery) {
+        filters.query_type = 'teaching_list';
+        console.log('🎯 Detected: Teaching List Query');
+      } else if (isCheckQuery) {
+        filters.query_type = 'teaching_check';
+        console.log('🎯 Detected: Teaching Check Query');
+      } else {
+        filters.query_type = 'general';
+      }
+    }
+
     // Detect major
-    if (q.includes('công nghệ thông tin') || q.includes('cntt')) {
+    if (this.matchQueryPhrase(q, 'công nghệ thông tin', 0.8) || this.hasToken(q, 'cntt')) {
       filters.metadata_filters = {
         ...filters.metadata_filters,
         major: 'Công nghệ thông tin'
       };
-    } else if (q.includes('khoa học máy tính') || q.includes('khmt')) {
+    } else if (this.matchQueryPhrase(q, 'khoa học máy tính', 0.8) || this.hasToken(q, 'khmt')) {
       filters.metadata_filters = {
         ...filters.metadata_filters,
         major: 'Khoa học máy tính'
@@ -217,150 +349,85 @@ export class RAGService {
   /* =====================================================
      RE-RANK WITH METADATA
   ====================================================== */
-  private rerankWithMetadata(
-    chunks: SearchResult[],
-    query: string
-  ): SearchResult[] {
-    const q = query.toLowerCase();
-    const qNormalized = this.normalizeForMatch(query);
+  private rerankWithMetadata(chunks: SearchResult[], query: string): SearchResult[] {
+    const q = this.normalizeForMatch(query);
+    const instructorName = this.extractInstructorName(query);
 
     return chunks
       .map(c => {
-        let bonus = 0;
-        const meta = c.metadata;
+        let score = c.similarity;
+        const meta = c.metadata || ({} as any);
 
-        // Boost if query explicitly mentions the source file
+        // Boost for document type match
+        if (c.document_type === 'syllabus' && this.hasToken(q, 'de cuong')) {
+          score += 0.15;
+        }
+
+        // Boost for source file mention
         if (this.queryMentionsSourceFile(q, meta.source_file)) {
-          bonus += 0.3;
+          score += 0.3;
         }
 
-        // 1. Prioritize specific document types
-        if (c.document_type === 'syllabus') {
-          // Syllabus có ưu tiên cao cho câu hỏi về môn học
-          if (
-            q.includes('học phần') ||
-            q.includes('môn') ||
-            q.includes('đề cương')
-          ) {
-            bonus += 0.15;
-          }
-
-          // Boost nếu match subject code
-          if (meta.subject_code && q.includes(meta.subject_code.toLowerCase())) {
-            bonus += 0.25;
-          }
-
-          // Boost nếu match subject name
-          bonus += this.getNameMatchBonus(qNormalized, meta.subject_name);
-        }
-
-        if (c.document_type === 'regulation') {
-          // 🎯 BOOST SPECIFIC regulations (decision numbers)
-          const isSpecificRegulation = meta.decision_number || 
-                                       meta.source_file?.toLowerCase().includes('qđ ') ||
-                                       meta.source_file?.toLowerCase().includes('quyết định');
+        // 🆕 ENHANCED: Boost for instructor in teaching context
+        if (instructorName) {
+          const normalizedContent = this.normalizeForMatch(c.content);
+          const normalizedInstructor = this.normalizeForMatch(instructorName);
           
-          const isGeneralRegulation = meta.source_file?.toLowerCase().includes('quy chế đào tạo') ||
-                                     meta.source_file?.toLowerCase().includes('quy chế tuyển sinh');
-
-          // Ưu tiên file cụ thể (QĐ ban hành quy chế X) hơn file tổng quát (Quy chế đào tạo)
-          if (isSpecificRegulation) {
-            bonus += 0.2; // Boost cao hơn cho regulation cụ thể
+          // Check if instructor mentioned in content
+          const hasInstructor = normalizedContent.includes(normalizedInstructor);
+          
+          if (hasInstructor) {
+            // Extra boost if in teaching section
+            const isTeachingSection = 
+              normalizedContent.includes('giang vien giang day') ||
+              normalizedContent.includes('giang vien phu trach') ||
+              normalizedContent.includes('nguoi giang day');
             
-            // Boost thêm nếu query nhắc đến nội dung regulation
-            if (q.includes('điểm rèn luyện') && meta.source_file?.toLowerCase().includes('rèn luyện')) {
-              bonus += 0.25;
+            if (isTeachingSection) {
+              score += 0.35; // Strong boost for teaching section
+              console.log(`🎓 Boosted chunk with instructor in teaching section`);
+            } else {
+              score += 0.15; // Moderate boost for other mentions
             }
-            if (q.includes('đánh giá') && meta.source_file?.toLowerCase().includes('đánh giá')) {
-              bonus += 0.15;
-            }
-          } else if (isGeneralRegulation) {
-            // File tổng quát chỉ được boost nhẹ
-            if (
-              q.includes('quy định') ||
-              q.includes('quy chế')
-            ) {
-              bonus += 0.05; // Boost thấp hơn nhiều
-            }
-            // Penalize nếu query hỏi cụ thể
-            if (q.includes('ban hành') || q.includes('quyết định')) {
-              bonus -= 0.1;
-            }
-          } else {
-            // Các regulation khác
-            if (q.includes('quy định') || q.includes('quy chế')) {
-              bonus += 0.12;
-            }
-          }
-
-          // Penalize expired regulations
-          if (meta.effective_status === 'expired') {
-            bonus -= 0.3;
           }
         }
 
-        if (c.document_type === 'curriculum') {
-          // CTĐT có ưu tiên cho câu hỏi về chương trình
-          if (
-            q.includes('chương trình') ||
-            q.includes('ctđt') ||
-            q.includes('tổng số tín chỉ')
-          ) {
-            bonus += 0.15;
-          } else {
-            // Giảm CTĐT cho các câu hỏi cụ thể
-            bonus -= 0.1;
-          }
-
-          // Boost náº¿u match program name (partial vs full)
-          bonus += this.getNameMatchBonus(qNormalized, meta.program_name);
+        // Boost for subject match
+        if (meta.subject_name && this.matchQueryPhrase(q, meta.subject_name, 0.7)) {
+          score += 0.2;
+        }
+        if (meta.subject_code && this.hasToken(q, meta.subject_code)) {
+          score += 0.25;
         }
 
-        // 2. Major matching
-        if (meta.major) {
-          bonus += this.getNameMatchBonus(qNormalized, meta.major);
+        // Boost for major match
+        if (meta.major && this.matchQueryPhrase(q, meta.major, 0.7)) {
+          score += 0.1;
         }
 
-        // 3. Recent year bonus
-        const year = meta.academic_year || meta.admission_from_year || meta.issued_year;
-        if (year) {
-          const yearNum = typeof year === 'string' ? parseInt(year) : year;
-          if (yearNum >= 2024) {
-            bonus += 0.05;
-          } else if (yearNum < 2020) {
-            bonus -= 0.1;
-          }
-        }
-
-        return {
-          ...c,
-          similarity: Math.min(c.similarity + bonus, 1)
-        };
+        return { ...c, similarity: Math.min(score, 1.0) };
       })
       .sort((a, b) => b.similarity - a.similarity);
   }
 
   /* =====================================================
-     CONTEXT BUILDER WITH METADATA
+     BUILD CONTEXT WITH METADATA
   ====================================================== */
   private buildContextWithMetadata(chunks: SearchResult[]): string {
     return chunks
-      .map((c, i) => {
+      .map(c => {
         const meta = c.metadata || ({} as any);
-        let header = `[Tài liệu ${i + 1} | ${(c.similarity * 100).toFixed(0)}%]`;
+        let header = `[${c.document_type.toUpperCase()}]`;
 
-        // Add specific metadata based on type
         if (c.document_type === 'syllabus') {
-          header += `\nLoại: Đề cương môn học`;
           if (meta.subject_name) header += `\nMôn: ${meta.subject_name}`;
           if (meta.subject_code) header += ` (${meta.subject_code})`;
-          if (meta.credits) header += `\nSố tín chỉ: ${meta.credits}`;
+          if (meta.credits) header += `\nTín chỉ: ${meta.credits}`;
           if (meta.major) header += `\nNgành: ${meta.major}`;
         } else if (c.document_type === 'regulation') {
           header += `\nLoại: Quy định`;
           if (meta.regulation_type) header += `\nPhân loại: ${meta.regulation_type}`;
           if (meta.decision_number) header += `\nSố QĐ: ${meta.decision_number}`;
-          if (meta.effective_status) header += `\nTrạng thái: ${meta.effective_status}`;
         } else if (c.document_type === 'curriculum') {
           header += `\nLoại: Chương trình đào tạo`;
           if (meta.program_name) header += `\nChương trình: ${meta.program_name}`;
@@ -374,12 +441,13 @@ export class RAGService {
   }
 
   /* =====================================================
-     LLM GENERATION
+     LLM GENERATION (Enhanced for teaching queries)
   ====================================================== */
   private async generateResponse(
     query: string,
     context: string,
-    chunks: SearchResult[]
+    chunks: SearchResult[],
+    queryType?: string
   ): Promise<string> {
     // Build source list
     const sources = chunks
@@ -395,14 +463,25 @@ export class RAGService {
       })
       .join('\n');
 
-    const systemPrompt = `Bạn là trợ lý AI của Đại học Kinh tế Quốc dân.
+    // 🆕 Enhanced system prompt for teaching list queries
+    let systemPrompt = `Bạn là trợ lý AI của Đại học Kinh tế Quốc dân.
 
-NGUYÊN TẮC:
+NGUYÊN TẮC CHUNG:
 - Ưu tiên thông tin trong TÀI LIỆU và suy luận hợp lý từ TÀI LIỆU khi cần.
-- Nếu suy luận, hãy nói rõ là suy luận và mức độ chắc chắn.
-- Ưu tiên thông tin từ tài liệu cụ thể (đề cương, quy định) hơn CTĐT tổng quát.
-- Trích dẫn rõ nguồn (tên môn, số quyết định, v.v.).
+- Trích dẫn rõ nguồn (tên môn, mã môn, số quyết định, v.v.).
 - Nếu không đủ thông tin để trả lời, hãy nói: "Không tìm thấy thông tin."`;
+
+    if (queryType === 'teaching_list') {
+      systemPrompt += `
+
+ĐẶC BIỆT CHO CÂU HỎI VỀ DANH SÁCH MÔN HỌC:
+- CHỈ liệt kê các môn tìm thấy trong phần "Giảng viên giảng dạy học phần".
+- KHÔNG tính các môn mà giảng viên chỉ ký duyệt hoặc biên soạn.
+- Format: Số thứ tự + Tên môn + Mã môn (nếu có).
+- Nếu chỉ tìm thấy ít môn, nói rõ: "Dựa trên các đề cương có sẵn, tìm thấy X môn..."
+- KHÔNG từ chối trả lời nếu có ít nhất 1-2 môn học.
+- Thêm disclaimer: "Thông tin từ phần Giảng viên giảng dạy học phần trong đề cương."`;
+    }
 
     const userContent = `TÀI LIỆU THAM KHẢO:\n${context}\n\nCÂU HỎI:\n${query}\n\nHãy trả lời dựa trên tài liệu trên.`;
 
@@ -411,7 +490,10 @@ NGUYÊN TẮC:
       { role: 'user', content: userContent }
     ];
 
-    const answer = await this.openaiChat(messages, { temperature: 0.2, top_p: 0.9 });
+    const answer = await this.openaiChat(messages, { 
+      temperature: queryType === 'teaching_list' ? 0.1 : 0.2,
+      top_p: 0.9 
+    });
 
     // Keep behavior: answer only (sources available if you want to append later)
     void sources;
@@ -468,11 +550,81 @@ NGUYÊN TẮC:
       .trim();
   }
 
+  private escapeRegExp(value: string): string {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  private hasExactPhrase(queryNormalized: string, phraseNormalized: string): boolean {
+    if (!phraseNormalized) return false;
+    const escaped = this.escapeRegExp(phraseNormalized);
+    const re = new RegExp(`(?:^|\\s)${escaped}(?:\\s|$)`, 'i');
+    return re.test(queryNormalized);
+  }
+
+  private tokenOverlapRatio(queryNormalized: string, phraseNormalized: string): number {
+    if (!queryNormalized || !phraseNormalized) return 0;
+    const qTokens = new Set(queryNormalized.split(' ').filter(Boolean));
+    const pTokens = phraseNormalized.split(' ').filter(Boolean);
+    if (pTokens.length === 0) return 0;
+    let hit = 0;
+    for (const t of pTokens) {
+      if (qTokens.has(t)) hit += 1;
+    }
+    return hit / pTokens.length;
+  }
+
+  private matchQueryPhrase(queryNormalized: string, phrase: string, minTokenRatio = 0.6): boolean {
+    const phraseNormalized = this.normalizeForMatch(phrase);
+    if (!phraseNormalized) return false;
+    if (this.hasExactPhrase(queryNormalized, phraseNormalized)) return true;
+
+    const tokens = phraseNormalized.split(' ').filter(Boolean);
+    if (tokens.length === 1) {
+      const token = tokens[0];
+      if (token.length < 3) {
+        return false;
+      }
+    }
+
+    return this.tokenOverlapRatio(queryNormalized, phraseNormalized) >= minTokenRatio;
+  }
+
+  private hasToken(queryNormalized: string, token: string): boolean {
+    const tokenNormalized = this.normalizeForMatch(token);
+    return this.hasExactPhrase(queryNormalized, tokenNormalized);
+  }
+
+  private extractInstructorName(query: string): string | null {
+    const q = this.normalizeForMatch(query);
+    const markers = ['thay', 'co', 'giang vien', 'giao vien'];
+    for (const marker of markers) {
+      const isMatch = marker.length < 3
+        ? this.hasToken(q, marker)
+        : this.matchQueryPhrase(q, marker, 1);
+      if (isMatch) {
+        const after = q.split(marker).slice(1).join(' ').trim();
+        if (!after) continue;
+        const cutoff = after.split(' ').slice(0, 4).join(' ').trim();
+        return cutoff || null;
+      }
+    }
+
+    if (this.matchQueryPhrase(q, 'day', 1)) {
+      const parts = q.split('day').slice(1).join(' ').trim();
+      const tokens = parts.split(' ').filter(Boolean);
+      if (tokens.length >= 2) {
+        return tokens.slice(0, 4).join(' ');
+      }
+    }
+
+    return null;
+  }
+
   private queryMentionsSourceFile(queryNormalized: string, sourceFile?: string): boolean {
     if (!sourceFile) return false;
     const full = this.normalizeForMatch(sourceFile);
     const noExt = this.normalizeForMatch(sourceFile.replace(/\.[^/.]+$/, ''));
-    return queryNormalized.includes(full) || queryNormalized.includes(noExt);
+    return this.hasExactPhrase(queryNormalized, full) || this.hasExactPhrase(queryNormalized, noExt);
   }
 
   private getNameMatchBonus(queryNormalized: string, name?: string): number {
@@ -509,8 +661,8 @@ NGUYÊN TẮC:
     const subjectName = meta?.subject_name ? this.normalizeForMatch(meta.subject_name) : '';
     const subjectCode = meta?.subject_code ? this.normalizeForMatch(meta.subject_code) : '';
 
-    if (subjectCode && q.includes(subjectCode)) return true;
-    if (subjectName && q.includes(subjectName)) return true;
+    if (subjectCode && this.hasToken(q, subjectCode)) return true;
+    if (subjectName && this.matchQueryPhrase(q, subjectName, 0.8)) return true;
     return false;
   }
 
