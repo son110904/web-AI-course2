@@ -97,38 +97,15 @@ export class UploadController {
   // Kiểm tra trạng thái upload
   async checkUploadStatus(req: Request, res: Response) {
     try {
-      const statsQuery = await this.db['pool'].query(`
-        SELECT 
-          COUNT(DISTINCT d.id) as total_documents,
-          COUNT(c.id) as total_chunks,
-          SUM(d.file_size) as total_size
-        FROM documents d
-        LEFT JOIN chunks c ON c.document_id = d.id
-      `);
-
-      const documentsQuery = await this.db['pool'].query(`
-        SELECT 
-          d.id,
-          d.filename,
-          d.file_path,
-          d.file_size,
-          d.content_type,
-          d.uploaded_at,
-          COUNT(c.id) as chunk_count,
-          COUNT(c.id) > 0 as has_embeddings
-        FROM documents d
-        LEFT JOIN chunks c ON c.document_id = d.id
-        GROUP BY d.id
-        ORDER BY d.uploaded_at DESC
-      `);
+      const stats = await this.db.getIngestStats();
 
       return res.json({
         summary: {
-          totalDocuments: Number(statsQuery.rows[0]?.total_documents || 0),
-          totalChunks: Number(statsQuery.rows[0]?.total_chunks || 0),
-          totalSize: Number(statsQuery.rows[0]?.total_size || 0),
+          totalDocuments: Number(stats.totalDocuments || 0),
+          totalChunks: Number(stats.totalChunks || 0),
+          totalSize: 0,
         },
-        documents: documentsQuery.rows,
+        documents: stats.documents || [],
       });
     } catch (error: any) {
       console.error('Check status failed:', error);

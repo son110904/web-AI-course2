@@ -152,8 +152,9 @@ export class RAGService {
     });
 
     // 5. Threshold filtering
-    const MIN_TOP = 0.45;
-    const MIN_CHUNK = 0.4;
+    // Lower thresholds to avoid dropping relevant context too aggressively after re-ranking.
+    const MIN_TOP = 0.38;
+    const MIN_CHUNK = 0.32;
 
     const top = reranked[0];
     if (top.similarity < MIN_TOP) {
@@ -352,11 +353,16 @@ export class RAGService {
   private rerankWithMetadata(chunks: SearchResult[], query: string): SearchResult[] {
     const q = this.normalizeForMatch(query);
     const instructorName = this.extractInstructorName(query);
+    const queryWantsCurriculum =
+      this.matchQueryPhrase(q, 'chương trình đào tạo', 0.8) ||
+      this.matchQueryPhrase(q, 'ctđt', 1) ||
+      this.matchQueryPhrase(q, 'curriculum', 1);
 
     return chunks
       .map(c => {
         let score = c.similarity;
         const meta = c.metadata || ({} as any);
+        const isCurriculum = c.document_type === 'curriculum';
 
         // Boost for document type match
         if (c.document_type === 'syllabus' && this.hasToken(q, 'de cuong')) {
@@ -402,10 +408,16 @@ export class RAGService {
 
         // Boost for major match
         if (meta.major && this.matchQueryPhrase(q, meta.major, 0.7)) {
-          score += 0.1;
+          // Reduce boost for CTĐT (curriculum) chunks to prevent them from dominating rerank.
+          score += isCurriculum ? 0.04 : 0.1;
         }
 
-        return { ...c, similarity: Math.min(score, 1.0) };
+        // If the query is not about CTĐT, slightly downweight curriculum chunks.
+        if (isCurriculum && !queryWantsCurriculum) {
+          score -= 0.06;
+        }
+
+        return { ...c, similarity: Math.max(0, Math.min(score, 1.0)) };
       })
       .sort((a, b) => b.similarity - a.similarity);
   }

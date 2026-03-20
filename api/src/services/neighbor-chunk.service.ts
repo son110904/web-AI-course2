@@ -57,7 +57,17 @@ export class NeighborChunkService {
       mergedRanges.push({ document_id: documentId, start_index: current.start, end_index: current.end });
     }
 
-    const neighbors = await this.db.getChunksInRanges(mergedRanges);
+    let neighbors: SearchResult[] = [];
+    try {
+      neighbors = await this.db.getChunksInRanges(mergedRanges);
+    } catch (err: any) {
+      const msg = String(err?.message || err || '');
+      if (msg.includes('Index required') || msg.includes('payload index')) {
+        console.warn('⚠️ Neighbor expansion skipped (missing Qdrant payload index).', msg);
+        return chunks;
+      }
+      throw err;
+    }
 
     // Merge: keep max similarity for chunks that were originally retrieved.
     const merged = new Map<string, SearchResult>();

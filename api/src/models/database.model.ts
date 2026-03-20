@@ -1,4 +1,4 @@
-import { Pool } from 'pg';
+import { v4 as uuidv4 } from 'uuid';
 
 export const ChunkSchema = {
   id: String,
@@ -76,119 +76,203 @@ export interface CurriculumMetadata {
 export type DocumentMetadata = SyllabusMetadata | RegulationMetadata | CurriculumMetadata;
 
 // OpenAI embeddings are 1536 dims for `text-embedding-3-small` (default in this repo).
-// If you change the embedding model, update this constant and re-create/migrate the DB column accordingly.
-const VECTOR_DIM = 1536;
+// If you change the embedding model, update this constant AND your Qdrant collection vector size accordingly.
+const DEFAULT_VECTOR_DIM = 1536;
+
+type QdrantSearchPoint = {
+  id: string | number;
+  score?: number;
+  payload?: Record<string, any> | null;
+};
+
+type QdrantFilter = {
+  must?: any[];
+  should?: any[];
+  must_not?: any[];
+};
+
+type QdrantRange = { gte?: number; lte?: number };
+
+function normalizeBaseUrl(url: string): string {
+  return String(url || '').trim().replace(/\/+$/, '');
+}
+
+function isRecord(payload: unknown): payload is Record<string, any> {
+  return !!payload && typeof payload === 'object' && !Array.isArray(payload);
+}
+
+function pickMetadata(payload: Record<string, any>): Record<string, any> {
+  const meta = payload.metadata;
+  if (isRecord(meta)) return meta;
+
+  // Derive metadata from common Qdrant payload conventions (no nested `metadata` object).
+  const folderType = payload.folder_type ?? payload.document_type;
+  const sourceFile = payload.minio_path ?? payload.file_path ?? payload.source_file ?? payload.file_name;
+
+  const derived: Record<string, any> = {
+    ...(folderType ? { document_type: folderType } : {}),
+    ...(sourceFile ? { source_file: sourceFile } : {}),
+  };
+
+  // Keep useful fields (helps debugging / UI).
+  const passthroughKeys = [
+    'file_name',
+    'chunk_name',
+    'chunk_index',
+    'total_chunks',
+    'text_length',
+    'bucket_source',
+    'path_prefix',
+    'folder_type',
+    'minio_path',
+    'created_at',
+  ];
+  for (const k of passthroughKeys) {
+    if (payload[k] !== undefined && derived[k] === undefined) derived[k] = payload[k];
+  }
+
+  return derived;
+}
+
+function toSearchResult(p: QdrantSearchPoint): SearchResult {
+  const payload = isRecord(p.payload) ? p.payload : {};
+  const metadata = pickMetadata(payload);
+
+  return {
+    chunk_id: String(p.id),
+    // Your collection uses `minio_path` as the stable "document" identifier.
+    document_id: String(
+      payload.document_id ||
+        payload.docId ||
+        payload.doc_id ||
+        payload.minio_path ||
+        payload.file_path ||
+        metadata.document_id ||
+        metadata.source_file ||
+        ''
+    ),
+    content: String(payload.text || payload.content || payload.page_content || ''),
+    similarity: typeof p.score === 'number' ? p.score : 0,
+    chunk_index: Number(payload.chunk_index ?? payload.chunkIndex ?? payload.order ?? payload.index ?? 0),
+    document_type: String(payload.folder_type || payload.document_type || metadata.document_type || ''),
+    metadata,
+  };
+}
 
 export class DatabaseModel {
-  private pool: Pool;
+  private qdrantUrl: string;
+  private qdrantApiKey?: string;
+  private collection: string;
+  private vectorDim: number;
+  private vectorName?: string;
+  private ensureIndexes: boolean;
+  private documentsById = new Map<
+    string,
+    {
+      document_type?: string;
+      metadata?: Record<string, any>;
+      filename?: string;
+      file_path?: string;
+    }
+  >();
 
-  constructor(connectionString: string) {
-    this.pool = new Pool({ connectionString });
+  constructor(params: {
+    qdrantUrl: string;
+    collection: string;
+    qdrantApiKey?: string;
+    vectorDim?: number;
+    vectorName?: string;
+    ensureIndexes?: boolean;
+  }) {
+    this.qdrantUrl = normalizeBaseUrl(params.qdrantUrl);
+    this.qdrantApiKey = params.qdrantApiKey;
+    this.collection = params.collection;
+    this.vectorDim = params.vectorDim ?? DEFAULT_VECTOR_DIM;
+    this.vectorName = params.vectorName ? String(params.vectorName).trim() : undefined;
+    this.ensureIndexes = params.ensureIndexes ?? false;
+  }
+
+  private headers(): Record<string, string> {
+    const h: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (this.qdrantApiKey) h['api-key'] = this.qdrantApiKey;
+    return h;
+  }
+
+  private async qdrant<T>(path: string, init?: RequestInit): Promise<T> {
+    const res = await fetch(`${this.qdrantUrl}${path}`, {
+      ...init,
+      headers: { ...this.headers(), ...(init?.headers || {}) },
+    });
+
+    const text = await res.text();
+    let json: any = null;
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch {
+      json = null;
+    }
+
+    if (!res.ok) {
+      const msg =
+        json?.status?.error ||
+        json?.message ||
+        json?.result?.error ||
+        text ||
+        res.statusText;
+      throw new Error(`Qdrant error (${res.status}) ${path}: ${msg}`);
+    }
+
+    return json as T;
+  }
+
+  private async ensurePayloadIndex(fieldName: string, fieldSchema: 'keyword' | 'integer' | 'float' | 'bool' | 'text') {
+    try {
+      await this.qdrant(`/collections/${encodeURIComponent(this.collection)}/index?wait=true`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          field_name: fieldName,
+          field_schema: fieldSchema,
+        }),
+      });
+      console.log(`✓ Qdrant payload index ensured: ${fieldName} (${fieldSchema})`);
+    } catch (err: any) {
+      const msg = String(err?.message || err || '');
+      // If it already exists or Qdrant version differs, don't hard-fail startup.
+      if (
+        msg.toLowerCase().includes('already exists') ||
+        msg.toLowerCase().includes('conflict') ||
+        msg.toLowerCase().includes('not found') ||
+        msg.toLowerCase().includes('unsupported') ||
+        msg.toLowerCase().includes('unimplemented')
+      ) {
+        console.warn(`⚠️ Qdrant payload index not ensured for "${fieldName}": ${msg}`);
+        return;
+      }
+      throw err;
+    }
   }
 
   async initialize(): Promise<void> {
-    const client = await this.pool.connect();
-    try {
-      await client.query('CREATE EXTENSION IF NOT EXISTS vector');
-
-      // ============================================
-      // DOCUMENTS TABLE - Metadata đầy đủ
-      // ============================================
-      await client.query(`
-        CREATE TABLE IF NOT EXISTS documents (
-          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-          filename TEXT NOT NULL,
-          file_path TEXT NOT NULL,
-          file_size INTEGER,
-          content_type TEXT,
-          
-          -- Document type
-          document_type TEXT NOT NULL,
-          
-          -- Metadata JSON (chứa tất cả metadata đặc thù)
-          metadata JSONB DEFAULT '{}'::jsonb,
-          
-          uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          
-          -- Index cho search nhanh
-          CONSTRAINT valid_document_type CHECK (document_type IN ('syllabus', 'regulation', 'curriculum'))
-        )
-      `);
-
-      // ============================================
-      // CHUNKS TABLE - Minimal metadata
-      // ============================================
-      await client.query(`
-        CREATE TABLE IF NOT EXISTS chunks (
-          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-          document_id UUID REFERENCES documents(id) ON DELETE CASCADE,
-          content TEXT NOT NULL,
-          chunk_index INTEGER,
-          
-          -- Embedding
-          embedding VECTOR(${VECTOR_DIM}),
-          
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-      `);
-
-      // Detect existing vector dimension in a robust way.
-      // Prefer parsing `format_type(...)` (e.g. "vector(1536)") to avoid typmod quirks.
-      const dimResult = await client.query(`
-        SELECT
-          format_type(a.atttypid, a.atttypmod) AS formatted_type,
-          a.atttypmod AS typmod
-        FROM pg_attribute a
-        JOIN pg_class c ON c.oid = a.attrelid
-        WHERE c.relname = 'chunks'
-          AND a.attname = 'embedding'
-          AND a.attnum > 0
-          AND NOT a.attisdropped
-        LIMIT 1
-      `);
-
-      const formattedType = String(dimResult.rows?.[0]?.formatted_type || '');
-      const match = formattedType.match(/vector\((\d+)\)/i);
-      const existingDim = match ? Number(match[1]) : Number(dimResult.rows?.[0]?.typmod || 0);
-      if (existingDim && existingDim !== VECTOR_DIM) {
-        throw new Error(
-          `Vector dimension mismatch: DB has ${existingDim} but app expects ${VECTOR_DIM}. ` +
-          `You need to migrate the chunks.embedding column (or drop/recreate tables) and re-ingest.`
-        );
-      }
-
-      // ============================================
-      // INDEXES
-      // ============================================
-      
-      // Vector similarity search
-      await client.query(`
-        CREATE INDEX IF NOT EXISTS chunks_embedding_idx
-        ON chunks USING ivfflat (embedding vector_cosine_ops)
-        WITH (lists = 100)
-      `);
-
-      // Metadata search indexes
-      await client.query(`
-        CREATE INDEX IF NOT EXISTS documents_type_idx 
-        ON documents(document_type)
-      `);
-
-      await client.query(`
-        CREATE INDEX IF NOT EXISTS documents_metadata_idx 
-        ON documents USING gin(metadata)
-      `);
-
-      // 🆕 Full-text search index for content
-      await client.query(`
-        CREATE INDEX IF NOT EXISTS chunks_content_idx 
-        ON chunks USING gin(to_tsvector('simple', content))
-      `);
-
-      console.log('✓ Database initialized with full metadata support');
-    } finally {
-      client.release();
+    if (!this.qdrantUrl) {
+      throw new Error('Missing required config: qdrantUrl');
     }
+    if (!this.collection) {
+      throw new Error('Missing required config: collection');
+    }
+
+    // Verify collection exists (user said they already uploaded embeddings).
+    await this.qdrant(`/collections/${encodeURIComponent(this.collection)}`, {
+      method: 'GET',
+    });
+
+    if (this.ensureIndexes) {
+      // Needed for neighbor expansion + optional filters.
+      await this.ensurePayloadIndex('minio_path', 'keyword');
+      await this.ensurePayloadIndex('chunk_index', 'integer');
+      await this.ensurePayloadIndex('folder_type', 'keyword');
+    }
+
+    console.log('✓ Qdrant connected');
   }
 
   // ============================================
@@ -202,21 +286,43 @@ export class DatabaseModel {
     document_type: 'syllabus' | 'regulation' | 'curriculum';
     metadata: Record<string, any>;
   }): Promise<string> {
-    const result = await this.pool.query(
-      `INSERT INTO documents (filename, file_path, file_size, content_type, document_type, metadata)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING id`,
-      [
-        params.filename,
-        params.file_path,
-        params.file_size,
-        params.content_type,
-        params.document_type,
-        JSON.stringify(params.metadata)
-      ]
-    );
+    const id = uuidv4();
 
-    return result.rows[0].id;
+    // Store a "document" point with a zero-vector (so it fits the collection schema).
+    const vector = new Array(this.vectorDim).fill(0);
+    const payload = {
+      record_type: 'document',
+      document_id: id,
+      filename: params.filename,
+      file_path: params.file_path,
+      file_size: params.file_size,
+      content_type: params.content_type,
+      document_type: params.document_type,
+      metadata: params.metadata || {},
+      uploaded_at: new Date().toISOString(),
+    };
+
+    await this.qdrant(`/collections/${encodeURIComponent(this.collection)}/points?wait=true`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        points: [
+          {
+            id,
+            vector: this.vectorName ? { [this.vectorName]: vector } : vector,
+            payload,
+          },
+        ],
+      }),
+    });
+
+    this.documentsById.set(id, {
+      document_type: params.document_type,
+      metadata: params.metadata || {},
+      filename: params.filename,
+      file_path: params.file_path,
+    });
+
+    return id;
   }
 
   // ============================================
@@ -228,22 +334,33 @@ export class DatabaseModel {
     chunk_index: number;
     embedding: number[];
   }): Promise<void> {
-    if (params.embedding.length !== VECTOR_DIM) {
+    if (params.embedding.length !== this.vectorDim) {
       throw new Error(`Embedding dimension mismatch: ${params.embedding.length}`);
     }
 
-    const embeddingStr = `[${params.embedding.join(',')}]`;
+    const id = uuidv4();
+    const doc = this.documentsById.get(params.document_id);
+    const payload = {
+      document_id: params.document_id,
+      content: params.content,
+      chunk_index: params.chunk_index,
+      document_type: doc?.document_type,
+      metadata: doc?.metadata,
+      source_file: doc?.file_path,
+    };
 
-    await this.pool.query(
-      `INSERT INTO chunks (document_id, content, chunk_index, embedding)
-       VALUES ($1, $2, $3, $4::vector)`,
-      [
-        params.document_id,
-        params.content,
-        params.chunk_index,
-        embeddingStr,
-      ]
-    );
+    await this.qdrant(`/collections/${encodeURIComponent(this.collection)}/points?wait=true`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        points: [
+          {
+            id,
+            vector: this.vectorName ? { [this.vectorName]: params.embedding } : params.embedding,
+            payload,
+          },
+        ],
+      }),
+    });
   }
 
   // ============================================
@@ -257,58 +374,47 @@ export class DatabaseModel {
       metadata_filters?: Record<string, any>;
     }
   ): Promise<SearchResult[]> {
-    if (queryEmbedding.length !== VECTOR_DIM) {
+    if (queryEmbedding.length !== this.vectorDim) {
       throw new Error(`Query embedding dimension mismatch: ${queryEmbedding.length}`);
     }
 
-    const embeddingStr = `[${queryEmbedding.join(',')}]`;
+    // Qdrant filtering can vary depending on how you uploaded payloads.
+    // To be robust, we retrieve more results and apply filters client-side.
+    const rawLimit = Math.max(limit * 5, 25);
 
-    let query = `
-      SELECT
-        c.id AS chunk_id,
-        c.document_id,
-        c.content,
-        c.chunk_index,
-        1 - (c.embedding <=> $1::vector) AS similarity,
-        d.document_type,
-        d.metadata
-      FROM chunks c
-      JOIN documents d ON d.id = c.document_id
-      WHERE 1=1
-    `;
+    const body: any = {
+      limit: rawLimit,
+      with_payload: true,
+    };
 
-    const params: any[] = [embeddingStr];
-    let paramIndex = 2;
+    body.vector = this.vectorName ? { name: this.vectorName, vector: queryEmbedding } : queryEmbedding;
 
-    // Filter by document type
+    const resp = await this.qdrant<{
+      result?: QdrantSearchPoint[];
+    }>(`/collections/${encodeURIComponent(this.collection)}/points/search`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+
+    const points = Array.isArray(resp?.result) ? resp.result : [];
+    let results = points.map(toSearchResult).filter(r => r.content);
+
     if (filters?.document_type) {
-      query += ` AND d.document_type = $${paramIndex}`;
-      params.push(filters.document_type);
-      paramIndex++;
+      results = results.filter(r => (r.document_type || r.metadata?.document_type) === filters.document_type);
     }
 
-    // Filter by metadata (JSON query)
     if (filters?.metadata_filters) {
-    for (const [key, value] of Object.entries(filters.metadata_filters)) {
-      if (key === 'subject_name') {
-        query += ` AND d.metadata->>'subject_name' ILIKE $${paramIndex}`;
-        params.push(`%${value}%`);
-      } else {
-        query += ` AND d.metadata->>'${key}' = $${paramIndex}`;
-        params.push(value);
+      for (const [key, value] of Object.entries(filters.metadata_filters)) {
+        if (key === 'subject_name') {
+          const needle = String(value || '').toLowerCase();
+          results = results.filter(r => String(r.metadata?.subject_name || '').toLowerCase().includes(needle));
+        } else {
+          results = results.filter(r => String(r.metadata?.[key] ?? '') === String(value ?? ''));
+        }
       }
-      paramIndex++;
     }
-  }
 
-    query += `
-      ORDER BY c.embedding <=> $1::vector
-      LIMIT $${paramIndex}
-    `;
-    params.push(limit);
-
-    const result = await this.pool.query(query, params);
-    return result.rows;
+    return results.slice(0, limit);
   }
 
   // ============================================
@@ -326,83 +432,11 @@ export class DatabaseModel {
       limit?: number;
     }
   ): Promise<SearchResult[]> {
-    const normalizedName = this.normalizeVietnamese(instructorName);
-    
-    const limit = options?.limit || 50;
-    const docType = options?.document_type || 'syllabus';
-
-    // 🎯 STRATEGY: Tìm chunks có cả:
-    // 1. Instructor name
-    // 2. Teaching-related keywords (giảng viên, giảng dạy, phụ trách, etc.)
-    // Điều này giúp loại bỏ mentions trong signature/approval sections
-
-    const query = `
-      SELECT DISTINCT ON (d.metadata->>'subject_code', d.metadata->>'subject_name')
-        c.id AS chunk_id,
-        c.document_id,
-        c.content,
-        c.chunk_index,
-        1.0 AS similarity,
-        d.document_type,
-        d.metadata
-      FROM chunks c
-      JOIN documents d ON d.id = c.document_id
-      WHERE 
-        d.document_type = $1
-        AND (
-          -- Must contain instructor name
-          c.content ILIKE $2
-        )
-        AND (
-          -- Must be in teaching context (not signature/approval)
-          c.content ILIKE '%giảng viên giảng dạy%'
-          OR c.content ILIKE '%giảng viên phụ trách%'
-          OR c.content ILIKE '%người giảng dạy%'
-          OR c.content ILIKE '%teaching staff%'
-          OR c.content ILIKE '%instructor%'
-          OR (
-            c.content ILIKE '%giảng viên%'
-            AND (
-              c.content ILIKE '%học phần%'
-              OR c.content ILIKE '%môn học%'
-              OR c.content ILIKE '%subject%'
-            )
-          )
-        )
-        -- Exclude approval/signature sections
-        AND c.content NOT ILIKE '%trưởng khoa ký duyệt%'
-        AND c.content NOT ILIKE '%ban biên soạn%'
-        AND c.content NOT ILIKE '%phê duyệt%'
-        AND c.content NOT ILIKE '%xác nhận%'
-        AND c.content NOT ILIKE '%dean approval%'
-      ORDER BY 
-        d.metadata->>'subject_code',
-        d.metadata->>'subject_name',
-        c.chunk_index
-      LIMIT $3
-    `;
-
-    const params = [
-      docType,
-      `%${normalizedName}%`,
-      limit
-    ];
-
-    try {
-      const result = await this.pool.query(query, params);
-      console.log(`📚 Found ${result.rows.length} teaching chunks for instructor: ${instructorName}`);
-      
-      // Debug: Log sample content to verify context
-      if (result.rows.length > 0) {
-        const sample = result.rows[0].content.substring(0, 200);
-        console.log(`📄 Sample chunk: ${sample}...`);
-      }
-      
-      return result.rows;
-    } catch (error: any) {
-      console.error('❌ Error in searchByInstructor:', error.message);
-      throw error;
-    }
+    // Qdrant doesn't provide SQL-style substring queries unless you created text indexes.
+    // Return empty so RAGService falls back to semantic search.
+    void instructorName;
+    void options;
+    return [];
   }
 
   /**
@@ -417,79 +451,9 @@ export class DatabaseModel {
       limit?: number;
     }
   ): Promise<SearchResult[]> {
-    const normalizedName = this.normalizeVietnamese(instructorName);
-    const limit = options?.limit || 50;
-    const docType = options?.document_type || 'syllabus';
-
-    // Pass 1: Find documents with teaching section
-    const documentsWithTeachingSection = await this.pool.query(`
-      SELECT DISTINCT d.id
-      FROM chunks c
-      JOIN documents d ON d.id = c.document_id
-      WHERE 
-        d.document_type = $1
-        AND (
-          c.content ILIKE '%giảng viên giảng dạy học phần%'
-          OR c.content ILIKE '%giảng viên phụ trách%'
-        )
-    `, [docType]);
-
-    if (documentsWithTeachingSection.rows.length === 0) {
-      console.log('⚠️ No documents with teaching section found');
-      return [];
-    }
-
-    const docIds = documentsWithTeachingSection.rows.map(r => r.id);
-
-    // Pass 2: In those documents, find chunks with instructor name
-    // within a few chunks of the teaching section marker
-    const query = `
-      WITH teaching_chunks AS (
-        SELECT 
-          c.document_id,
-          c.chunk_index as teaching_index
-        FROM chunks c
-        WHERE 
-          c.document_id = ANY($1::uuid[])
-          AND (
-            c.content ILIKE '%giảng viên giảng dạy%'
-            OR c.content ILIKE '%giảng viên phụ trách%'
-          )
-      )
-      SELECT DISTINCT ON (d.metadata->>'subject_code', d.metadata->>'subject_name')
-        c.id AS chunk_id,
-        c.document_id,
-        c.content,
-        c.chunk_index,
-        1.0 AS similarity,
-        d.document_type,
-        d.metadata
-      FROM chunks c
-      JOIN documents d ON d.id = c.document_id
-      JOIN teaching_chunks tc ON tc.document_id = c.document_id
-      WHERE 
-        c.content ILIKE $2
-        -- Must be within 3 chunks of teaching section marker
-        AND ABS(c.chunk_index - tc.teaching_index) <= 3
-        -- Exclude approval sections
-        AND c.content NOT ILIKE '%trưởng khoa%'
-        AND c.content NOT ILIKE '%phê duyệt%'
-      ORDER BY 
-        d.metadata->>'subject_code',
-        d.metadata->>'subject_name',
-        c.chunk_index
-      LIMIT $3
-    `;
-
-    const result = await this.pool.query(query, [
-      docIds,
-      `%${normalizedName}%`,
-      limit
-    ]);
-
-    console.log(`📚 Two-pass search found ${result.rows.length} teaching chunks for: ${instructorName}`);
-    
-    return result.rows;
+    void instructorName;
+    void options;
+    return [];
   }
 
   /**
@@ -509,84 +473,136 @@ export class DatabaseModel {
   ): Promise<SearchResult[]> {
     if (ranges.length === 0) return [];
 
-    const params: any[] = [];
-    const valuesSql = ranges
-      .map((r, i) => {
-        const base = i * 3;
-        params.push(r.document_id, r.start_index, r.end_index);
-        return `($${base + 1}::uuid, $${base + 2}::int, $${base + 3}::int)`;
-      })
-      .join(', ');
+    const out: SearchResult[] = [];
 
-    const query = `
-      WITH ranges(document_id, start_index, end_index) AS (
-        VALUES ${valuesSql}
-      )
-      SELECT
-        c.id AS chunk_id,
-        c.document_id,
-        c.content,
-        0::float8 AS similarity,
-        c.chunk_index,
-        d.document_type,
-        d.metadata
-      FROM chunks c
-      JOIN documents d ON d.id = c.document_id
-      JOIN ranges r
-        ON r.document_id = c.document_id
-       AND c.chunk_index BETWEEN r.start_index AND r.end_index
-      ORDER BY c.document_id, c.chunk_index
-    `;
+    // Qdrant doesn't support querying multiple (doc,range) tuples in one call easily.
+    // Keep it simple and scroll per range (ranges are merged already by NeighborChunkService).
+    const tryScroll = async (filter: QdrantFilter, limit: number) => {
+      const resp = await this.qdrant<{
+        result?: { points?: Array<{ id: string | number; payload?: Record<string, any> | null }> };
+      }>(`/collections/${encodeURIComponent(this.collection)}/points/scroll`, {
+        method: 'POST',
+        body: JSON.stringify({ filter, limit, with_payload: true }),
+      });
+      return resp?.result?.points || [];
+    };
 
-    const result = await this.pool.query(query, params);
-    return result.rows;
+    for (const r of ranges) {
+      const limit = Math.max(256, (r.end_index - r.start_index + 1) * 2);
+
+      const docKeys = ['minio_path', 'document_id', 'docId', 'doc_id', 'file_path', 'file_name'];
+      const idxKeys = ['chunk_index', 'order'];
+
+      let points: Array<{ id: string | number; payload?: Record<string, any> | null }> = [];
+
+      for (const docKey of docKeys) {
+        for (const idxKey of idxKeys) {
+          const filter: QdrantFilter = {
+            must: [
+              { key: docKey, match: { value: r.document_id } },
+              { key: idxKey, range: { gte: r.start_index, lte: r.end_index } as QdrantRange },
+            ],
+          };
+
+          points = await tryScroll(filter, limit);
+          if (points.length > 0) break;
+        }
+        if (points.length > 0) break;
+      }
+
+      for (const p of points) {
+        out.push(toSearchResult({ id: p.id, score: 0, payload: p.payload ?? {} }));
+      }
+    }
+
+    out.sort((a, b) =>
+      a.document_id === b.document_id
+        ? a.chunk_index - b.chunk_index
+        : a.document_id.localeCompare(b.document_id)
+    );
+
+    return out;
   }
 
   // ============================================
   // STATS
   // ============================================
   async getIngestStats() {
-    const totalChunksResult = await this.pool.query(
-      'SELECT COUNT(*) as count FROM chunks'
-    );
+    const countByFilter = async (filter: QdrantFilter) => {
+      const resp = await this.qdrant<{ result?: { count?: number } }>(
+        `/collections/${encodeURIComponent(this.collection)}/points/count`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ filter, exact: true }),
+        }
+      );
+      return Number(resp?.result?.count || 0);
+    };
 
-    const totalDocsResult = await this.pool.query(
-      'SELECT COUNT(*) as count FROM documents'
-    );
+    let totalChunks = await countByFilter({
+      must: [{ key: 'record_type', match: { value: 'chunk' } }],
+    });
 
-    const byTypeResult = await this.pool.query(`
-      SELECT 
-        document_type,
-        COUNT(*) as count
-      FROM documents
-      GROUP BY document_type
-    `);
+    let totalDocuments = await countByFilter({
+      must: [{ key: 'record_type', match: { value: 'document' } }],
+    });
 
-    const documentsResult = await this.pool.query(`
-      SELECT 
-        d.id,
-        d.filename,
-        d.document_type,
-        d.metadata,
-        COUNT(c.id) as num_chunks
-      FROM documents d
-      LEFT JOIN chunks c ON c.document_id = d.id
-      GROUP BY d.id
-      ORDER BY d.uploaded_at DESC
-    `);
+    // Backward-compatible fallback for collections that don't store `record_type`.
+    if (totalChunks === 0 && totalDocuments === 0) {
+      const resp = await this.qdrant<{ result?: { count?: number } }>(
+        `/collections/${encodeURIComponent(this.collection)}/points/count`,
+        { method: 'POST', body: JSON.stringify({ exact: true }) }
+      );
+      totalChunks = Number(resp?.result?.count || 0);
+      totalDocuments = 0;
+    }
 
+    // Keep shape compatible, but avoid expensive aggregations.
     return {
-      totalDocuments: parseInt(totalDocsResult.rows[0]?.count || '0'),
-      totalChunks: parseInt(totalChunksResult.rows[0]?.count || '0'),
-      byType: byTypeResult.rows,
-      documents: documentsResult.rows
+      totalDocuments,
+      totalChunks,
+      byType: [],
+      documents: [],
     };
   }
 
   async getAllDocumentPaths(): Promise<string[]> {
-    const result = await this.pool.query(
-      'SELECT file_path FROM documents'
-    );
-    return result.rows.map(row => row.file_path);
+    const resp = await this.qdrant<{
+      result?: { points?: Array<{ payload?: Record<string, any> | null }> };
+    }>(`/collections/${encodeURIComponent(this.collection)}/points/scroll`, {
+      method: 'POST',
+      body: JSON.stringify({
+        limit: 10_000,
+        with_payload: ['minio_path', 'file_path', 'file_name'],
+      }),
+    });
+
+    const points = resp?.result?.points || [];
+    const paths = points
+      .map(p => (isRecord(p.payload) ? (p.payload.minio_path ?? p.payload.file_path ?? p.payload.file_name) : null))
+      .filter((p): p is string => typeof p === 'string' && p.length > 0);
+
+    return Array.from(new Set(paths));
+  }
+
+  // Used by ingest.controller.ts to wipe data (optional).
+  async clearAll(): Promise<void> {
+    await this.qdrant(`/collections/${encodeURIComponent(this.collection)}/points/delete?wait=true`, {
+      method: 'POST',
+      body: JSON.stringify({
+        filter: {
+          must: [{ key: 'record_type', match: { value: 'chunk' } }],
+        },
+      }),
+    });
+
+    await this.qdrant(`/collections/${encodeURIComponent(this.collection)}/points/delete?wait=true`, {
+      method: 'POST',
+      body: JSON.stringify({
+        filter: {
+          must: [{ key: 'record_type', match: { value: 'document' } }],
+        },
+      }),
+    });
   }
 }

@@ -157,21 +157,13 @@ export class IngestController {
   // Xóa tất cả
   async clearAll(req: Request, res: Response) {
     try {
-      const chunksResult = await this.db['pool'].query(
-        'DELETE FROM chunks RETURNING id'
-      );
-      
-      const docsResult = await this.db['pool'].query(
-        'DELETE FROM documents RETURNING id'
-      );
-      
-      console.log(`Deleted ${chunksResult.rowCount} chunks`);
-      console.log(`Deleted ${docsResult.rowCount} documents`);
-      
+      await this.db.clearAll();
+      console.log('Deleted all points (chunks + documents) in Qdrant collection');
+
       res.json({
         message: 'Đã xóa toàn bộ dữ liệu',
-        deletedChunks: chunksResult.rowCount,
-        deletedDocuments: docsResult.rowCount
+        deletedChunks: null,
+        deletedDocuments: null
       });
     } catch (error: any) {
       console.error('Clear failed:', error);

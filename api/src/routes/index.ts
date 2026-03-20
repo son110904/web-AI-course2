@@ -1,12 +1,8 @@
 import { Router } from 'express';
 import { ChatController } from '../controllers/chat.controller';
-import { IngestController } from '../controllers/ingest.controller';
-import { UploadController } from '../controllers/upload.controller';
 
 export function createRoutes(
-  chatController: ChatController,
-  ingestController: IngestController,
-  uploadController: UploadController
+  chatController: ChatController
 ): Router {
   const router = Router();
   
@@ -16,21 +12,6 @@ export function createRoutes(
 
   router.post('/api/demo_agent/v1/ask', (req, res) =>
     chatController.ask(req, res)
-  );
-  
-  router.post('/api/ingest', (req, res) =>
-    ingestController.ingestAll(req, res)
-  );
- 
-  router.get('/api/ingest/status', (req, res) =>
-    ingestController.checkIngestStatus(req, res)
-  );
-  
-  router.delete('/api/ingest/clear', (req, res) =>
-    ingestController.clearAll(req, res)
-  );
-  router.get('/api/upload/status', (req, res) =>
-    uploadController.checkUploadStatus(req, res)
   );
   return router;
 }
