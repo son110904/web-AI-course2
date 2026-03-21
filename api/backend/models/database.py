@@ -365,10 +365,23 @@ class DatabaseModel:
         return output
 
     def get_ingest_stats(self) -> dict[str, Any]:
-        total_chunks = self._count_by_filter({"must": [{"key": "record_type", "match": {"value": "chunk"}}]})
-        total_documents = self._count_by_filter(
-            {"must": [{"key": "record_type", "match": {"value": "document"}}]}
-        )
+        try:
+            total_chunks = self._count_by_filter({"must": [{"key": "record_type", "match": {"value": "chunk"}}]})
+        except Exception as exc:
+            if self._is_missing_index_error(exc):
+                total_chunks = self._count_by_field_value_no_index("record_type", "chunk")
+            else:
+                raise
+
+        try:
+            total_documents = self._count_by_filter(
+                {"must": [{"key": "record_type", "match": {"value": "document"}}]}
+            )
+        except Exception as exc:
+            if self._is_missing_index_error(exc):
+                total_documents = self._count_by_field_value_no_index("record_type", "document")
+            else:
+                raise
 
         if total_chunks == 0 and total_documents == 0:
             fallback = self._qdrant(
@@ -392,6 +405,38 @@ class DatabaseModel:
             {"filter": payload_filter, "exact": True},
         )
         return int((response.get("result") or {}).get("count") or 0)
+
+    def _is_missing_index_error(self, exc: Exception) -> bool:
+        message = str(exc).lower()
+        return "index required but not found" in message
+
+    def _count_by_field_value_no_index(self, key: str, expected_value: str) -> int:
+        total = 0
+        next_offset: Any = None
+
+        while True:
+            payload: dict[str, Any] = {"limit": 1000, "with_payload": [key]}
+            if next_offset is not None:
+                payload["offset"] = next_offset
+
+            response = self._qdrant(
+                "POST",
+                f"/collections/{self.collection}/points/scroll",
+                payload,
+            )
+            result = response.get("result") or {}
+            points = result.get("points") or []
+
+            for point in points:
+                value = (point.get("payload") or {}).get(key)
+                if str(value) == expected_value:
+                    total += 1
+
+            next_offset = result.get("next_page_offset")
+            if not next_offset or not points:
+                break
+
+        return total
 
     def get_all_document_paths(self) -> list[str]:
         response = self._qdrant(

@@ -31,8 +31,11 @@ class ChatController:
         try:
             bot_message = self.rag_service.chat(valid_messages, expanded_queries)
             return {"botMessage": bot_message}, 200
-        except Exception:
-            return {"botMessage": "System error while processing your request"}, 500
+        except Exception as exc:
+            return {
+                "botMessage": "System error while processing your request",
+                "error_detail": f"{type(exc).__name__}: {exc}",
+            }, 500
 
     def ask(self, payload: dict[str, Any]) -> tuple[dict[str, Any], int]:
         if isinstance(payload.get("messages"), list):
@@ -84,12 +87,13 @@ class ChatController:
                 },
                 200,
             )
-        except Exception:
+        except Exception as exc:
             return (
                 {
                     "session_id": session_id,
                     "status": "error",
                     "message": "System error while processing your request",
+                    "error_detail": f"{type(exc).__name__}: {exc}",
                 },
                 500,
             )

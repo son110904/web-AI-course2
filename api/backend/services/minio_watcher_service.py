@@ -40,7 +40,7 @@ class MinIOWatcherService:
 
     def load_existing_files(self) -> None:
         for folder in self.folders:
-            prefix = f"courses-chatbot/{folder}/"
+            prefix = f"rag-processed/{folder}/"
             files = self.minio.list_files(prefix)
             for file_name in files:
                 if file_name.endswith(".docx") and not file_name.split("/")[-1].startswith("~$"):
@@ -49,7 +49,7 @@ class MinIOWatcherService:
     def check_new_files(self) -> None:
         new_files: list[str] = []
         for folder in self.folders:
-            prefix = f"courses-chatbot/{folder}/"
+            prefix = f"rag-processed/{folder}/"
             for file_name in self.minio.list_files(prefix):
                 if not file_name.endswith(".docx"):
                     continue

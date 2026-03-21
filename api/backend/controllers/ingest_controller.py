@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from backend.models.database import DatabaseModel
@@ -22,11 +23,23 @@ class IngestController:
         self.embedding_service = embedding_service
         self.db = db
 
-    def ingest_all(self) -> tuple[dict[str, Any], int]:
-        base_prefix = "courses-chatbot"
-        folders = ["curriculum", "career description", "syllabus"]
+    def ingest_all(self, force: bool = False) -> tuple[dict[str, Any], int]:
+        base_prefix = (os.getenv("MINIO_BASE_PREFIX") or "rag-processed").strip("/ ")
+        folders = [
+            "curriculum",
+            "career",
+            "career_description",
+            "career-description",
+            "career description",
+            "regulation",
+            "syllabus",
+        ]
+        supported_extensions = {".docx", ".pdf", ".txt", ".text", ".xlsx", ".xls"}
 
-        total_files = 0
+        candidate_files: set[str] = set()
+        scanned_files = 0
+        ingested_files = 0
+        skipped_existing = 0
         total_chunks = 0
         errors: list[str] = []
 
@@ -40,48 +53,68 @@ class IngestController:
                     continue
 
                 for object_name in files:
-                    if object_name.endswith("/"):
+                    scanned_files += 1
+                    if object_name.endswith("/") or object_name.split("/")[-1].startswith("~$"):
                         continue
-                    if not object_name.lower().endswith(".docx"):
+                    ext = f".{object_name.rsplit('.', 1)[-1].lower()}" if "." in object_name else ""
+                    if ext not in supported_extensions:
+                        continue
+                    candidate_files.add(object_name)
+
+            existing_paths: set[str] = set()
+            if not force:
+                try:
+                    existing_paths = set(self.db.get_all_document_paths())
+                except Exception as exc:
+                    errors.append(f"Error loading existing document paths: {exc}")
+
+            for object_name in sorted(candidate_files):
+                if not force and object_name in existing_paths:
+                    skipped_existing += 1
+                    continue
+
+                try:
+                    buffer = self.minio.get_file(object_name)
+                    raw_text = self.document_service.extract_text(buffer, object_name)
+                    text = self.document_service.clean_text(raw_text)
+                    if not text:
                         continue
 
-                    try:
-                        total_files += 1
-                        buffer = self.minio.get_file(object_name)
-                        raw_text = self.document_service.extract_text(buffer, object_name)
-                        text = self.document_service.clean_text(raw_text)
-                        if not text:
-                            continue
+                    metadata = self.document_service.parse_metadata_from_path(object_name, text)
+                    document_id = self.db.insert_document(
+                        filename=object_name.split("/")[-1],
+                        file_path=object_name,
+                        file_size=len(buffer),
+                        content_type="application/octet-stream",
+                        document_type=str(metadata.get("document_type") or "syllabus"),
+                        metadata=metadata,
+                    )
 
-                        metadata = self.document_service.parse_metadata_from_path(object_name, text)
-                        document_id = self.db.insert_document(
-                            filename=object_name.split("/")[-1],
-                            file_path=object_name,
-                            file_size=len(buffer),
-                            content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                            document_type=str(metadata.get("document_type") or "syllabus"),
-                            metadata=metadata,
+                    chunks = self.document_service.chunk_text(text)
+                    for index, chunk in enumerate(chunks):
+                        embedding = self.embedding_service.generate_embedding(chunk)
+                        self.db.insert_chunk(
+                            document_id=document_id,
+                            content=chunk,
+                            chunk_index=index,
+                            embedding=embedding,
                         )
-
-                        chunks = self.document_service.chunk_text(text)
-                        for index, chunk in enumerate(chunks):
-                            embedding = self.embedding_service.generate_embedding(chunk)
-                            self.db.insert_chunk(
-                                document_id=document_id,
-                                content=chunk,
-                                chunk_index=index,
-                                embedding=embedding,
-                            )
-                            total_chunks += 1
-                    except Exception as exc:
-                        errors.append(f"Error processing {object_name}: {exc}")
+                        total_chunks += 1
+                    ingested_files += 1
+                except Exception as exc:
+                    errors.append(f"Error processing {object_name}: {exc}")
 
             return {
                 "message": "Ingest completed",
-                "totalFiles": total_files,
+                "basePrefix": base_prefix,
+                "scannedFiles": scanned_files,
+                "candidateFiles": len(candidate_files),
+                "ingestedFiles": ingested_files,
+                "skippedExisting": skipped_existing,
                 "totalChunks": total_chunks,
                 "errors": errors if errors else None,
                 "folders": folders,
+                "force": force,
             }, 200
         except Exception as exc:
             return {"error": str(exc)}, 500

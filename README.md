@@ -1,58 +1,40 @@
 # Web AI Course 2
 
-Du an gom 2 phan chay doc lap:
-- `client/`: Next.js frontend
-- `api/`: Python FastAPI backend
+Ban nay chay truc tiep tren CLI, khong can giao dien va khong dung endpoint HTTP.
 
-## 1) Chay backend (Python)
+## Chay CLI
 
 ```bash
 cd api
-python -m venv .venv
+py -3 -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
-python main.py
+py -3 main.py
 ```
 
-Backend chay tai: `http://localhost:4000`
+Lenh trong CLI:
+- `/reset`: xoa lich su chat
+- `/status`: xem tong so document/chunk trong Qdrant
+- `/ingest`: quet MinIO va ingest file moi vao Qdrant (neu da cau hinh MINIO)
+- `/ingest --force`: ingest lai tat ca file tim thay trong MinIO
+- `/exit` hoac `/quit`: thoat
 
-Health check:
-- `GET http://localhost:4000/health`
-
-Chat endpoint:
-- `POST http://localhost:4000/api/demo_agent/v1/ask`
-
-## 2) Chay frontend (Next.js)
-
-```bash
-cd client
-npm install
-npm run dev
-```
-
-Frontend chay tai: `http://localhost:3000`
-
-## Cau hinh frontend goi backend
-
-File `client/.env.local`:
-
-```env
-NEXT_PUBLIC_BACKEND_API_URL=http://localhost:4000
-```
-
-Frontend goi truc tiep backend qua URL tren (khong dung proxy API route nua).
-
-## Bien moi truong backend
+## Bien moi truong bat buoc
 
 File `api/.env` can toi thieu:
-- `PORT`
 - `QDRANT_URL`
 - `QDRANT_COLLECTION`
 - `OPENAI_API_KEY`
 
-Neu su dung MinIO ingest them:
+Neu muon ingest tu MinIO, can them:
 - `MINIO_ENDPOINT`
 - `MINIO_PORT`
 - `MINIO_ACCESS_KEY`
 - `MINIO_SECRET_KEY`
 - `MINIO_BUCKET_NAME`
+- `MINIO_USE_SSL` (tuy chon, mac dinh `false`)
+- `MINIO_BASE_PREFIX` (tuy chon, mac dinh `rag-processed`)
+
+Neu `/ingest` bao loi ket noi MinIO:
+- Kiem tra dung API port cua MinIO (thuong la `9000`, khong phai console port).
+- Neu dung HTTPS (`MINIO_USE_SSL=true`), nen dat `MINIO_ENDPOINT` la domain khop chung chi SSL (khong nen dung IP).

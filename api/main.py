@@ -1,38 +1,32 @@
 from __future__ import annotations
 
 import os
-from contextlib import asynccontextmanager
-from typing import Any
+import sys
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.middleware.cors import CORSMiddleware
-import uvicorn
-
-from backend.controllers.chat_controller import ChatController
-from backend.controllers.ingest_controller import IngestController
-from backend.controllers.upload_controller import UploadController
-from backend.models.database import DatabaseModel
-from backend.models.minio_model import MinIOModel
-from backend.services.document_service import DocumentService
-from backend.services.embedding_service import EmbeddingService
-from backend.services.rag_service import RAGService
-
 
 load_dotenv()
 
 
-def _build_services() -> dict[str, Any]:
-    qdrant_url = os.getenv("QDRANT_URL")
+# ──────────────────────────────────────────────
+# Khởi tạo services
+# ──────────────────────────────────────────────
+
+def build_services():
+    qdrant_url        = os.getenv("QDRANT_URL")
     qdrant_collection = os.getenv("QDRANT_COLLECTION")
-    openai_api_key = os.getenv("OPENAI_API_KEY")
+    openai_api_key    = os.getenv("OPENAI_API_KEY")
 
     if not qdrant_url:
-        raise RuntimeError("Missing required env var: QDRANT_URL")
+        sys.exit("❌  Thiếu biến môi trường: QDRANT_URL")
     if not qdrant_collection:
-        raise RuntimeError("Missing required env var: QDRANT_COLLECTION")
+        sys.exit("❌  Thiếu biến môi trường: QDRANT_COLLECTION")
     if not openai_api_key:
-        raise RuntimeError("Missing required env var: OPENAI_API_KEY")
+        sys.exit("❌  Thiếu biến môi trường: OPENAI_API_KEY")
+
+    from backend.models.database import DatabaseModel
+    from backend.services.embedding_service import EmbeddingService
+    from backend.services.rag_service import RAGService
 
     db = DatabaseModel(
         qdrant_url=qdrant_url,
@@ -56,178 +50,210 @@ def _build_services() -> dict[str, Any]:
         db=db,
         embedding_service=embedding_service,
         openai_api_key=openai_api_key,
-        openai_chat_model=os.getenv("OPENAI_CHAT_MODEL") or os.getenv("OPENAI_MODEL") or "gpt-4o-mini",
+        openai_chat_model=os.getenv("OPENAI_CHAT_MODEL") or "gpt-4o-mini",
         openai_base_url=os.getenv("OPENAI_BASE_URL") or None,
         openai_timeout_ms=int(os.getenv("OPENAI_TIMEOUT_MS") or 60000),
     )
 
-    chat_controller = ChatController(rag_service)
+    return db, embedding_service, rag_service
+
+
+# ──────────────────────────────────────────────
+# INGEST: MinIO (rag-processed) → extract → chunk → embed → Qdrant
+# ──────────────────────────────────────────────
+
+def extract_text_from_file(document_service, buffer: bytes, filename: str) -> str:
+    """
+    DocumentService hỗ trợ: .docx .pdf .txt .xlsx
+    Thêm xử lý .json và .md trực tiếp ở đây.
+    """
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+
+    if ext in {"json", "md", "txt", "text"}:
+        return document_service.clean_text(buffer.decode("utf-8", errors="ignore"))
+
+    # Các loại còn lại (.docx, .pdf, .xlsx) giao cho DocumentService
+    return document_service.extract_text(buffer, filename)
+
+
+def run_ingest(db, embedding_service):
+    minio_endpoint      = os.getenv("MINIO_ENDPOINT")
+    minio_port          = os.getenv("MINIO_PORT")
+    minio_access_key    = os.getenv("MINIO_ACCESS_KEY")
+    minio_secret_key    = os.getenv("MINIO_SECRET_KEY")
+    minio_bucket        = os.getenv("MINIO_BUCKET_NAME")
+    minio_processed_prefix = os.getenv("MINIO_PROCESSED_PREFIX") or "rag-processed"
+
+    if not all([minio_endpoint, minio_port, minio_access_key, minio_secret_key, minio_bucket]):
+        print("⚠️  Không tìm thấy đủ cấu hình MinIO trong .env → bỏ qua bước ingest.")
+        return
+
+    from backend.models.minio_model import MinIOModel
+    from backend.services.document_service import DocumentService
+
+    minio = MinIOModel(
+        endpoint=str(minio_endpoint),
+        port=int(minio_port),
+        access_key=str(minio_access_key),
+        secret_key=str(minio_secret_key),
+        bucket=str(minio_bucket),
+        use_ssl=(os.getenv("MINIO_USE_SSL") or "false").lower() == "true",
+    )
     document_service = DocumentService()
 
-    services: dict[str, Any] = {
-        "db": db,
-        "embedding_service": embedding_service,
-        "rag_service": rag_service,
-        "chat_controller": chat_controller,
-        "document_service": document_service,
-    }
+    print("\n" + "═" * 55)
+    print(f"📥  Bắt đầu ingest từ MinIO")
+    print(f"    Endpoint : {minio_endpoint}:{minio_port}")
+    print(f"    Bucket   : {minio_bucket}")
+    print(f"    Prefix   : {minio_processed_prefix}/")
+    print("═" * 55)
 
-    minio_required = [
-        os.getenv("MINIO_ENDPOINT"),
-        os.getenv("MINIO_PORT"),
-        os.getenv("MINIO_ACCESS_KEY"),
-        os.getenv("MINIO_SECRET_KEY"),
-        os.getenv("MINIO_BUCKET_NAME"),
+    # List toàn bộ file dưới rag-processed/
+    try:
+        all_files = minio.list_files(minio_processed_prefix + "/")
+    except Exception as e:
+        print(f"❌  Không kết nối được MinIO: {e}")
+        return
+
+    # Hỗ trợ: .docx .pdf .xlsx .txt .json .md
+    SUPPORTED_EXTS = {".docx", ".pdf", ".xlsx", ".txt", ".json", ".md"}
+    files = [
+        f for f in all_files
+        if not f.endswith("/") and any(f.lower().endswith(ext) for ext in SUPPORTED_EXTS)
     ]
 
-    if all(minio_required):
-        minio_model = MinIOModel(
-            endpoint=str(os.getenv("MINIO_ENDPOINT")),
-            port=int(os.getenv("MINIO_PORT") or 9000),
-            access_key=str(os.getenv("MINIO_ACCESS_KEY")),
-            secret_key=str(os.getenv("MINIO_SECRET_KEY")),
-            bucket=str(os.getenv("MINIO_BUCKET_NAME")),
-            use_ssl=(os.getenv("MINIO_USE_SSL") or "false").lower() == "true",
-        )
+    if not files:
+        print(f"⚠️  Không tìm thấy file nào dưới '{minio_processed_prefix}/'")
+        return
 
-        services["minio"] = minio_model
-        services["upload_controller"] = UploadController(
-            db=db,
-            minio=minio_model,
-            document_service=document_service,
-            embedding_service=embedding_service,
-        )
-        services["ingest_controller"] = IngestController(
-            minio=minio_model,
-            document_service=document_service,
-            embedding_service=embedding_service,
-            db=db,
-        )
+    print(f"📂  Tìm thấy {len(files)} file cần xử lý\n")
 
-    return services
+    total_chunks = 0
+    errors = []
 
+    for i, object_name in enumerate(files, 1):
+        filename = object_name.split("/")[-1]
+        print(f"  [{i}/{len(files)}] {filename}", end=" ... ", flush=True)
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    app.state.services = _build_services()
-    yield
+        try:
+            # 1. Lấy file từ MinIO
+            buffer = minio.get_file(object_name)
 
+            # 2. Extract + clean text
+            text = extract_text_from_file(document_service, buffer, filename)
+            if not text:
+                print("⚠️  Bỏ qua (không đọc được nội dung)")
+                continue
 
-app = FastAPI(title="Chatbot API (Python)", lifespan=lifespan)
+            # 3. Parse metadata từ đường dẫn file
+            metadata = document_service.parse_metadata_from_path(object_name, text)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[os.getenv("CORS_ORIGIN") or "http://localhost:3000"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+            # 4. Lưu document record vào Qdrant
+            document_id = db.insert_document(
+                filename=filename,
+                file_path=object_name,
+                file_size=len(buffer),
+                content_type="application/octet-stream",
+                document_type=str(metadata.get("document_type") or "syllabus"),
+                metadata=metadata,
+            )
 
+            # 5. Chunk → embed → đẩy từng chunk lên Qdrant
+            chunks = document_service.chunk_text(text)
+            for idx, chunk in enumerate(chunks):
+                embedding = embedding_service.generate_embedding(chunk)
+                db.insert_chunk(
+                    document_id=document_id,
+                    content=chunk,
+                    chunk_index=idx,
+                    embedding=embedding,
+                )
+                total_chunks += 1
 
-@app.middleware("http")
-async def request_logger(request: Request, call_next):
-    print(f"{request.method} {request.url.path}")
-    return await call_next(request)
+            print(f"✅  {len(chunks)} chunks")
 
+        except Exception as e:
+            errors.append(f"{object_name}: {e}")
+            print(f"❌  Lỗi: {e}")
 
-@app.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
-
-
-@app.post("/api/demo_agent/v1/ask")
-async def ask(request: Request):
-    payload = await request.json()
-    controller: ChatController = request.app.state.services["chat_controller"]
-    data, status = controller.ask(payload)
-    if status >= 400:
-        raise HTTPException(status_code=status, detail=data)
-    return data
-
-
-@app.post("/api/demo_agent/v1/chat")
-async def chat(request: Request):
-    payload = await request.json()
-    controller: ChatController = request.app.state.services["chat_controller"]
-    data, status = controller.chat(payload)
-    if status >= 400:
-        raise HTTPException(status_code=status, detail=data)
-    return data
+    print("\n" + "═" * 55)
+    print(f"✅  Ingest hoàn thành!")
+    print(f"    📄  Files xử lý được : {len(files) - len(errors)}/{len(files)}")
+    print(f"    🧩  Chunks đã embed  : {total_chunks}")
+    if errors:
+        print(f"    ⚠️   Lỗi ({len(errors)}):")
+        for err in errors:
+            print(f"         • {err}")
+    print("═" * 55)
 
 
-@app.post("/api/ingest/all")
-async def ingest_all(request: Request):
-    controller: IngestController | None = request.app.state.services.get("ingest_controller")
-    if controller is None:
-        raise HTTPException(status_code=400, detail="MinIO is not configured")
+# ──────────────────────────────────────────────
+# CHAT: hỏi đáp trên terminal
+# ──────────────────────────────────────────────
 
-    data, status = controller.ingest_all()
-    if status >= 400:
-        raise HTTPException(status_code=status, detail=data)
-    return data
+def run_chat(rag_service):
+    from backend.models.database import ChatMessage
+    from backend.services.query_expansion_service import expand_query
 
+    print("\n" + "═" * 55)
+    print("💬  Chế độ hỏi đáp  (gõ 'exit' để thoát)")
+    print("═" * 55)
 
-@app.get("/api/ingest/status")
-async def ingest_status(request: Request):
-    controller: IngestController | None = request.app.state.services.get("ingest_controller")
-    if controller is None:
-        raise HTTPException(status_code=400, detail="MinIO is not configured")
+    history: list[ChatMessage] = []
 
-    data, status = controller.check_ingest_status()
-    if status >= 400:
-        raise HTTPException(status_code=status, detail=data)
-    return data
+    while True:
+        try:
+            question = input("\nBạn: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n👋  Thoát.")
+            break
 
+        if not question:
+            continue
+        if question.lower() in {"exit", "quit", "thoat"}:
+            print("👋  Thoát.")
+            break
 
-@app.delete("/api/ingest/clear")
-async def clear_all(request: Request):
-    controller: IngestController | None = request.app.state.services.get("ingest_controller")
-    if controller is None:
-        raise HTTPException(status_code=400, detail="MinIO is not configured")
+        history.append(ChatMessage(role="user", content=question))
+        expanded = expand_query(question)
 
-    data, status = controller.clear_all()
-    if status >= 400:
-        raise HTTPException(status_code=status, detail=data)
-    return data
+        try:
+            answer = rag_service.chat(history, expanded)
+        except Exception as e:
+            answer = f"❌  Lỗi: {e}"
 
-
-@app.post("/api/upload/ingest-minio")
-async def upload_ingest_from_minio(request: Request):
-    controller: UploadController | None = request.app.state.services.get("upload_controller")
-    if controller is None:
-        raise HTTPException(status_code=400, detail="MinIO is not configured")
-
-    payload = await request.json()
-    data, status = controller.ingest_from_minio(payload)
-    if status >= 400:
-        raise HTTPException(status_code=status, detail=data)
-    return data
+        history.append(ChatMessage(role="assistant", content=answer))
+        print(f"\nBot: {answer}")
 
 
-@app.get("/api/upload/minio-files")
-async def upload_list_minio_files(request: Request, prefix: str = Query(default="")):
-    controller: UploadController | None = request.app.state.services.get("upload_controller")
-    if controller is None:
-        raise HTTPException(status_code=400, detail="MinIO is not configured")
-
-    data, status = controller.list_minio_files(prefix)
-    if status >= 400:
-        raise HTTPException(status_code=status, detail=data)
-    return data
-
-
-@app.get("/api/upload/status")
-async def upload_status(request: Request):
-    controller: UploadController | None = request.app.state.services.get("upload_controller")
-    if controller is None:
-        raise HTTPException(status_code=400, detail="MinIO is not configured")
-
-    data, status = controller.check_upload_status()
-    if status >= 400:
-        raise HTTPException(status_code=status, detail=data)
-    return data
-
+# ──────────────────────────────────────────────
+# MAIN
+# ──────────────────────────────────────────────
 
 if __name__ == "__main__":
-    port = int(os.getenv("PORT") or 4000)
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
+    print("🚀  Khởi động hệ thống...")
+
+    db, embedding_service, rag_service = build_services()
+    print("✅  Kết nối Qdrant và OpenAI thành công.")
+
+    # Kiểm tra dữ liệu hiện có trong Qdrant
+    try:
+        stats        = db.get_ingest_stats()
+        total_chunks = stats.get("totalChunks", 0)
+        total_docs   = stats.get("totalDocuments", 0)
+    except Exception:
+        total_chunks = 0
+        total_docs   = 0
+
+    print(f"📊  Qdrant hiện có: {total_docs} documents, {total_chunks} chunks")
+
+    if total_chunks == 0:
+        print("\n⚠️  Chưa có dữ liệu trong Qdrant.")
+        ans = input("▶  Chạy ingest từ MinIO ngay bây giờ? (y/n): ").strip().lower()
+    else:
+        ans = input("\n▶  Chạy lại ingest từ MinIO? (y/n): ").strip().lower()
+
+    if ans == "y":
+        run_ingest(db, embedding_service)
+
+    run_chat(rag_service)

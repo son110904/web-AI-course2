@@ -146,8 +146,8 @@ class RAGService:
 
         if not subjects_map:
             return (
-                f"No subject information was found for instructor {instructor_name} "
-                "in the teaching section of the syllabus."
+                f"Không tìm thấy thông tin môn học nào của giảng viên {instructor_name} "
+                "trong phần phân công giảng dạy của đề cương."
             )
 
         ordered = sorted(subjects_map.values(), key=lambda item: item["name"] or "")
@@ -159,12 +159,12 @@ class RAGService:
                 lines.append(f"{index}. {subject['name']}")
 
         if len(ordered) == 1:
-            note = "\n\nNote: only one subject was found from currently indexed files."
+            note = "\n\nLưu ý: chỉ tìm thấy một môn học trong các file đề cương hiện có."
         else:
-            note = "\n\nInformation is extracted from teaching sections in syllabus files."
+            note = "\n\nThông tin được trích xuất từ phần phân công giảng dạy trong các file đề cương."
 
         return (
-            f"Based on syllabus files, instructor {instructor_name} teaches {len(ordered)} subject(s):\n\n"
+            f"Dựa trên các file đề cương, giảng viên {instructor_name} giảng dạy {len(ordered)} môn học:\n\n"
             + "\n".join(lines)
             + note
         )
@@ -177,8 +177,6 @@ class RAGService:
             filters["document_type"] = "syllabus"
         elif self._match_query_phrase(q, "chuong trinh dao tao", 0.8) or self._match_query_phrase(q, "ctdt", 1) or self._match_query_phrase(q, "curriculum", 1):
             filters["document_type"] = "curriculum"
-        elif self._match_query_phrase(q, "quy dinh", 0.8) or self._match_query_phrase(q, "quy che", 0.8) or self._match_query_phrase(q, "quyet dinh", 0.8):
-            filters["document_type"] = "regulation"
         elif self._match_query_phrase(q, "career", 1) or self._match_query_phrase(q, "nghe nghiep", 0.8) or self._match_query_phrase(q, "job", 1):
             filters["document_type"] = "career"
 
@@ -326,18 +324,19 @@ class RAGService:
         _ = chunks
 
         system_prompt = (
-            "You are an AI assistant for university academic documents. "
-            "Answer only from provided context. "
-            "If context is insufficient, say you do not have enough information."
+            "Bạn là trợ lý AI của Trường Đại học Kinh tế Quốc dân. "
+            "Hãy trả lời bằng tiếng Việt về tư vấn định hướng ngành học, nghề nghiệp và tra cứu thông tin. "
+            "Chỉ trả lời dựa trên ngữ cảnh được cung cấp. "
+            "Nếu ngữ cảnh không đủ thông tin, hãy trả lời: 'Tôi không tìm thấy thông tin phù hợp trong tài liệu hiện có.'"
         )
 
         if query_type == "teaching_list":
             system_prompt += (
-                " For teaching-list questions, list only subjects that are explicitly taught by that instructor "
-                "in teaching sections of syllabus documents."
+                " Với câu hỏi về danh sách giảng dạy, chỉ liệt kê các môn học mà giảng viên đó được ghi rõ là giảng dạy "
+                "trong phần phân công giảng dạy của đề cương môn học."
             )
 
-        user_prompt = f"CONTEXT:\n{context}\n\nQUESTION:\n{query}\n\nAnswer based on context above."
+        user_prompt = f"NGỮ CẢNH:\n{context}\n\nCÂU HỎI:\n{query}\n\nHãy trả lời bằng tiếng Việt dựa trên ngữ cảnh trên."
         return self._openai_chat(
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -462,4 +461,4 @@ class RAGService:
         return False
 
     def _no_context(self) -> str:
-        return "No relevant information found in indexed documents."
+        return "Tôi không tìm thấy thông tin phù hợp trong tài liệu hiện có."
