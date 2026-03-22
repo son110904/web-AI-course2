@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from backend.models.database import DatabaseModel
@@ -26,6 +27,7 @@ class UploadController:
         object_name = payload.get("objectName")
         if not object_name:
             return {"error": "Missing objectName"}, 400
+        ingest_batch_size = max(1, int(os.getenv("INGEST_BATCH_SIZE") or 32))
 
         try:
             file_buffer = self.minio.get_file(str(object_name))
@@ -46,17 +48,15 @@ class UploadController:
                 metadata=metadata,
             )
 
-            chunks = self.document_service.chunk_text(text)
-            for index, chunk_text in enumerate(chunks):
-                if not chunk_text:
-                    continue
-
-                embedding = self.embedding_service.generate_embedding(chunk_text)
-                self.db.insert_chunk(
+            chunks = [chunk for chunk in self.document_service.chunk_text(text) if chunk]
+            for start in range(0, len(chunks), ingest_batch_size):
+                chunk_batch = chunks[start : start + ingest_batch_size]
+                embedding_batch = self.embedding_service.generate_batch_embeddings(chunk_batch)
+                self.db.insert_chunks_batch(
                     document_id=document_id,
-                    content=chunk_text,
-                    chunk_index=index,
-                    embedding=embedding,
+                    chunks=chunk_batch,
+                    embeddings=embedding_batch,
+                    start_index=start,
                 )
 
             return {

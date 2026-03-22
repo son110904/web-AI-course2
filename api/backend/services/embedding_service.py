@@ -18,6 +18,7 @@ class EmbeddingService:
         self.openai_embedding_model = openai_embedding_model
         self.openai_base_url = (openai_base_url or "https://api.openai.com").rstrip("/")
         self.openai_timeout_ms = int(openai_timeout_ms or 60_000)
+        self._session = requests.Session()
 
     def initialize(self) -> None:
         return
@@ -27,7 +28,7 @@ class EmbeddingService:
 
     def generate_batch_embeddings(self, texts: list[str]) -> list[list[float]]:
         inputs = [self._preprocess(text) for text in texts]
-        response = requests.post(
+        response = self._session.post(
             f"{self.openai_base_url}/v1/embeddings",
             headers={
                 "Content-Type": "application/json",

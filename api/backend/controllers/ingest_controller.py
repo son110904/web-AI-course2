@@ -25,6 +25,7 @@ class IngestController:
 
     def ingest_all(self, force: bool = False) -> tuple[dict[str, Any], int]:
         base_prefix = (os.getenv("MINIO_BASE_PREFIX") or "rag-processed").strip("/ ")
+        ingest_batch_size = max(1, int(os.getenv("INGEST_BATCH_SIZE") or 32))
         folders = [
             "curriculum",
             "career",
@@ -90,16 +91,17 @@ class IngestController:
                         metadata=metadata,
                     )
 
-                    chunks = self.document_service.chunk_text(text)
-                    for index, chunk in enumerate(chunks):
-                        embedding = self.embedding_service.generate_embedding(chunk)
-                        self.db.insert_chunk(
+                    chunks = [chunk for chunk in self.document_service.chunk_text(text) if chunk]
+                    for start in range(0, len(chunks), ingest_batch_size):
+                        chunk_batch = chunks[start : start + ingest_batch_size]
+                        embedding_batch = self.embedding_service.generate_batch_embeddings(chunk_batch)
+                        self.db.insert_chunks_batch(
                             document_id=document_id,
-                            content=chunk,
-                            chunk_index=index,
-                            embedding=embedding,
+                            chunks=chunk_batch,
+                            embeddings=embedding_batch,
+                            start_index=start,
                         )
-                        total_chunks += 1
+                        total_chunks += len(chunk_batch)
                     ingested_files += 1
                 except Exception as exc:
                     errors.append(f"Error processing {object_name}: {exc}")

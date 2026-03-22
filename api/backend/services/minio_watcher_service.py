@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 from typing import Any
 
@@ -63,6 +64,7 @@ class MinIOWatcherService:
             self.ingest_files(new_files)
 
     def ingest_files(self, files: list[str]) -> None:
+        ingest_batch_size = max(1, int(os.getenv("INGEST_BATCH_SIZE") or 32))
         for object_name in files:
             try:
                 buffer = self.minio.get_file(object_name)
@@ -81,13 +83,14 @@ class MinIOWatcherService:
                 )
 
                 chunks = [chunk.strip() for chunk in self.document_service.chunk_text(text) if chunk.strip()]
-                for index, chunk in enumerate(chunks):
-                    embedding = self.embedding_service.generate_embedding(chunk)
-                    self.db.insert_chunk(
+                for start in range(0, len(chunks), ingest_batch_size):
+                    chunk_batch = chunks[start : start + ingest_batch_size]
+                    embedding_batch = self.embedding_service.generate_batch_embeddings(chunk_batch)
+                    self.db.insert_chunks_batch(
                         document_id=document_id,
-                        content=chunk,
-                        chunk_index=index,
-                        embedding=embedding,
+                        chunks=chunk_batch,
+                        embeddings=embedding_batch,
+                        start_index=start,
                     )
             except Exception:
                 self.known_files.discard(object_name)

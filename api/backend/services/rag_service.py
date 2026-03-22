@@ -11,6 +11,23 @@ from backend.services.embedding_service import EmbeddingService
 from backend.services.neighbor_chunk_service import NeighborChunkService
 
 
+SUBJECT_ALIASES: dict[str, dict[str, str]] = {
+    "lap trinh java": {"subject_name": "Lập trình Java", "subject_code": "CNTT1153"},
+    "co so du lieu": {"subject_name": "Cơ sở dữ liệu", "subject_code": "TIKT1130"},
+    "he quan tri co so du lieu": {"subject_name": "Hệ quản trị cơ sở dữ liệu", "subject_code": "CNTT1152"},
+    "chu nghia xa hoi khoa hoc": {"subject_name": "Chủ nghĩa xã hội khoa học", "subject_code": "LLNL1107"},
+    "ngon ngu anh": {"subject_name": "Ngôn ngữ Anh"},
+}
+
+MAJOR_ALIASES: dict[str, str] = {
+    "cong nghe thong tin": "Cong nghe thong tin",
+    "cntt": "Cong nghe thong tin",
+    "khoa hoc may tinh": "Khoa hoc may tinh",
+    "khmt": "Khoa hoc may tinh",
+    "ngon ngu anh": "Ngon ngu Anh",
+}
+
+
 class RAGService:
     def __init__(
         self,
@@ -29,6 +46,131 @@ class RAGService:
         self.openai_base_url = (openai_base_url or "https://api.openai.com").rstrip("/")
         self.openai_timeout_ms = int(openai_timeout_ms or 60_000)
         self.neighbor_chunk_service = NeighborChunkService(db)
+
+    def chat_with_context(
+        self,
+        messages: list[ChatMessage],
+        expanded_queries: list[str] | None = None,
+    ) -> dict:
+        """
+        Giống chat() nhưng trả về dict:
+          {
+            "answer":            str,
+            "chunk_ids":         list[str],   # ID các chunk theo thứ tự similarity
+            "retrieval_context": list[str],   # nội dung text tương ứng
+          }
+        Dùng cho eval pipeline — không ảnh hưởng hành vi chat thông thường.
+        """
+        user_message = next((m for m in reversed(messages) if m.role == "user"), None)
+        if not user_message:
+            return {"answer": "Không có câu hỏi hợp lệ.", "chunk_ids": [], "retrieval_context": []}
+
+        query   = user_message.content.strip()
+        filters = self._detect_query_intent(query)
+
+        # ── teaching_list fast-path ──
+        if filters.get("query_type") == "teaching_list":
+            instructor_name = self._extract_instructor_name(query)
+            if instructor_name:
+                metadata_results = self.db.search_by_instructor_two_pass(
+                    instructor_name, {"document_type": "syllabus", "limit": 50}
+                )
+                if not metadata_results:
+                    metadata_results = self.db.search_by_instructor(
+                        instructor_name, {"document_type": "syllabus", "limit": 50}
+                    )
+                if len(metadata_results) >= 2:
+                    answer = self._build_teaching_list_response(instructor_name, metadata_results)
+                    return {
+                        "answer"           : answer,
+                        "chunk_ids"        : [c.chunk_id for c in metadata_results],
+                        "retrieval_context": [c.content  for c in metadata_results],
+                    }
+
+        # ── vector search ──
+        candidate_queries = [query, *(expanded_queries or [])]
+        normalized_candidates: list[str] = []
+        for c in candidate_queries:
+            v = str(c or "").strip()
+            if v and v not in normalized_candidates:
+                normalized_candidates.append(v)
+        normalized_candidates = normalized_candidates[:5]
+
+        raw_chunks_by_id: dict[str, SearchResult] = {}
+        embedding_for_followups: list[float] | None = None
+
+        for candidate in normalized_candidates:
+            embedding = self.embedding_service.generate_embedding(candidate)
+            if embedding_for_followups is None and candidate == query:
+                embedding_for_followups = embedding
+            for item in self.db.search_similar_chunks(embedding, 15, filters):
+                if item.chunk_id not in raw_chunks_by_id:
+                    raw_chunks_by_id[item.chunk_id] = item
+
+        embedding  = embedding_for_followups or self.embedding_service.generate_embedding(query)
+        raw_chunks = list(raw_chunks_by_id.values())
+
+        if not raw_chunks:
+            return {"answer": self._no_context(), "chunk_ids": [], "retrieval_context": []}
+
+        reranked     = self._rerank_with_metadata(raw_chunks, query)
+        file_mention = self._detect_mentioned_source_file(query, reranked)
+        if file_mention:
+            reranked = [c for c in reranked if c.metadata.get("source_file") == file_mention]
+
+        expanded_by_subject = False
+        if reranked:
+            top = reranked[0]
+            if top.document_type == "syllabus" and self._query_mentions_subject(query, top.metadata):
+                sf = (
+                    {"metadata_filters": {"subject_code": top.metadata.get("subject_code")}}
+                    if top.metadata.get("subject_code")
+                    else {"metadata_filters": {"subject_name": top.metadata.get("subject_name")}}
+                )
+                subject_chunks = self.db.search_similar_chunks(embedding, 100, sf)
+                if subject_chunks:
+                    reranked = self._rerank_with_metadata(subject_chunks, query)
+                    expanded_by_subject = True
+
+        if not reranked:
+            return {"answer": self._no_context(), "chunk_ids": [], "retrieval_context": []}
+
+        if reranked[0].similarity < 0.38:
+            return {"answer": self._no_context(), "chunk_ids": [], "retrieval_context": []}
+
+        chunk_limit = (
+            20 if filters.get("query_type") == "teaching_list"
+            else 8 if expanded_by_subject
+            else 4
+        )
+        if expanded_by_subject or filters.get("query_type") == "teaching_list":
+            selected = reranked[:chunk_limit]
+        else:
+            selected = [c for c in reranked if c.similarity >= 0.32][:chunk_limit]
+
+        if not selected:
+            return {"answer": self._no_context(), "chunk_ids": [], "retrieval_context": []}
+
+        neighbor_window = int(__import__("os").environ.get("NEIGHBOR_CHUNK_WINDOW", "1") or "1")
+        expanded_chunks = self.neighbor_chunk_service.expand(selected, neighbor_window)
+
+        context = self._build_context_with_metadata(expanded_chunks)
+        if len(context) < 50:
+            return {"answer": self._no_context(), "chunk_ids": [], "retrieval_context": []}
+
+        answer = self._generate_response(query, context, expanded_chunks, filters.get("query_type"))
+
+        # Nếu LLM tự trả về "không tìm thấy" dù có context → không tính chunk là retrieved
+        no_context_text = self._no_context().strip().lower()
+        answer_is_no_context = answer.strip().lower().startswith(no_context_text[:30])
+
+        return {
+            "answer"           : answer,
+            # chunk_ids = selected (trước neighbor expand) → eval đúng công thức P/R/F1/MRR
+            # Trả [] nếu LLM báo không tìm thấy thông tin
+            "chunk_ids"        : [] if answer_is_no_context else [c.chunk_id for c in selected],
+            "retrieval_context": [] if answer_is_no_context else [c.content  for c in expanded_chunks],
+        }
 
     def chat(self, messages: list[ChatMessage], expanded_queries: list[str] | None = None) -> str:
         user_message = next((message for message in reversed(messages) if message.role == "user"), None)

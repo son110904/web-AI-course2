@@ -7,3 +7,4 @@ venv/
 .mypy_cache/
 .pytest_cache/
 .DS_Store
+eval_results

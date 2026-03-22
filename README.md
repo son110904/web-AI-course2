@@ -25,6 +25,7 @@ File `api/.env` can toi thieu:
 - `QDRANT_URL`
 - `QDRANT_COLLECTION`
 - `OPENAI_API_KEY`
+- `INGEST_BATCH_SIZE` (tuy chon, mac dinh `32`, tang de ingest nhanh hon)
 
 Neu muon ingest tu MinIO, can them:
 - `MINIO_ENDPOINT`

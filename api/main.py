@@ -83,6 +83,7 @@ def run_ingest(db, embedding_service):
     minio_secret_key    = os.getenv("MINIO_SECRET_KEY")
     minio_bucket        = os.getenv("MINIO_BUCKET_NAME")
     minio_processed_prefix = os.getenv("MINIO_PROCESSED_PREFIX") or "rag-processed"
+    ingest_batch_size = max(1, int(os.getenv("INGEST_BATCH_SIZE") or 32))
 
     if not all([minio_endpoint, minio_port, minio_access_key, minio_secret_key, minio_bucket]):
         print("⚠️  Không tìm thấy đủ cấu hình MinIO trong .env → bỏ qua bước ingest.")
@@ -159,16 +160,17 @@ def run_ingest(db, embedding_service):
             )
 
             # 5. Chunk → embed → đẩy từng chunk lên Qdrant
-            chunks = document_service.chunk_text(text)
-            for idx, chunk in enumerate(chunks):
-                embedding = embedding_service.generate_embedding(chunk)
-                db.insert_chunk(
+            chunks = [chunk for chunk in document_service.chunk_text(text) if chunk]
+            for start in range(0, len(chunks), ingest_batch_size):
+                chunk_batch = chunks[start : start + ingest_batch_size]
+                embedding_batch = embedding_service.generate_batch_embeddings(chunk_batch)
+                db.insert_chunks_batch(
                     document_id=document_id,
-                    content=chunk,
-                    chunk_index=idx,
-                    embedding=embedding,
+                    chunks=chunk_batch,
+                    embeddings=embedding_batch,
+                    start_index=start,
                 )
-                total_chunks += 1
+                total_chunks += len(chunk_batch)
 
             print(f"✅  {len(chunks)} chunks")
 

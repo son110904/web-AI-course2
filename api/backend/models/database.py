@@ -45,6 +45,7 @@ class DatabaseModel:
         self.vector_name = str(vector_name or "").strip() or None
         self.ensure_indexes = ensure_indexes
         self.documents_by_id: dict[str, dict[str, Any]] = {}
+        self._session = requests.Session()
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -53,7 +54,7 @@ class DatabaseModel:
         return headers
 
     def _qdrant(self, method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
-        response = requests.request(
+        response = self._session.request(
             method=method,
             url=f"{self.qdrant_url}{path}",
             json=payload,
@@ -170,40 +171,69 @@ class DatabaseModel:
         chunk_index: int,
         embedding: list[float],
     ) -> None:
-        if len(embedding) != self.vector_dim:
-            raise RuntimeError(f"Embedding dimension mismatch: {len(embedding)}")
+        self.insert_chunks_batch(
+            document_id=document_id,
+            chunks=[content],
+            embeddings=[embedding],
+            start_index=chunk_index,
+        )
 
-        chunk_id = str(uuid.uuid4())
+    def insert_chunks_batch(
+        self,
+        *,
+        document_id: str,
+        chunks: list[str],
+        embeddings: list[list[float]],
+        start_index: int = 0,
+    ) -> int:
+        if len(chunks) != len(embeddings):
+            raise RuntimeError(
+                f"Chunks/embeddings size mismatch: {len(chunks)} vs {len(embeddings)}"
+            )
+
+        if not chunks:
+            return 0
+
         doc = self.documents_by_id.get(document_id, {})
         metadata = doc.get("metadata", {}) if isinstance(doc.get("metadata"), dict) else {}
         doc_type = metadata.get("doc_type") or doc.get("doc_type") or doc.get("document_type")
         course_code = metadata.get("course_code") or metadata.get("subject_code")
-        payload = {
-            "record_type": "chunk",
-            "document_id": document_id,
-            "text": content,
-            "content": content,
-            "chunk_index": int(chunk_index),
-            "doc_type": doc_type,
-            "document_type": doc.get("document_type"),
-            "section": metadata.get("section"),
-            "course_code": course_code,
-            "career_name_en": metadata.get("career_name_en"),
-            "metadata": metadata,
-            "source_file": doc.get("file_path"),
-        }
 
-        point = {
-            "id": chunk_id,
-            "vector": {self.vector_name: embedding} if self.vector_name else embedding,
-            "payload": payload,
-        }
+        points: list[dict[str, Any]] = []
+        for offset, (content, embedding) in enumerate(zip(chunks, embeddings)):
+            if len(embedding) != self.vector_dim:
+                raise RuntimeError(f"Embedding dimension mismatch: {len(embedding)}")
+
+            chunk_id = str(uuid.uuid4())
+            payload = {
+                "record_type": "chunk",
+                "document_id": document_id,
+                "text": content,
+                "content": content,
+                "chunk_index": int(start_index + offset),
+                "doc_type": doc_type,
+                "document_type": doc.get("document_type"),
+                "section": metadata.get("section"),
+                "course_code": course_code,
+                "career_name_en": metadata.get("career_name_en"),
+                "metadata": metadata,
+                "source_file": doc.get("file_path"),
+            }
+
+            points.append(
+                {
+                    "id": chunk_id,
+                    "vector": {self.vector_name: embedding} if self.vector_name else embedding,
+                    "payload": payload,
+                }
+            )
 
         self._qdrant(
             "PUT",
             f"/collections/{self.collection}/points?wait=true",
-            {"points": [point]},
+            {"points": points},
         )
+        return len(points)
 
     def search_similar_chunks(
         self,
