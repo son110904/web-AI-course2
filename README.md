@@ -1,60 +1,41 @@
 # Web AI Course 2
 
-Dự án web application sử dụng React cho trang web Course.
+Ban nay chay truc tiep tren CLI, khong can giao dien va khong dung endpoint HTTP.
 
-## Cài đặt
-
-### 1. Clone repository
-
-```bash
-git clone https://github.com/son110904/web-AI-course2.git
-cd web-AI-course2
-```
-
-### 2. Cài đặt dependencies và thiết lập client
-```bash
-cd client
-```
-
-Sử dụng npm:
-```bash
-npm install
-```
-
-Hoặc sử dụng yarn:
-```bash
-yarn install
-```
-
-## 💻 Chạy ứng dụng
-
-### Môi trường Development
-
-```bash
-npm run dev
-```
-
-Ứng dụng sẽ chạy tại [http://localhost:3000](http://localhost:3000) (hoặc cổng được cấu hình trong dự án)
-
-### 3. Thiết lập API 
-Sử dụng npm:
+## Chay CLI
 
 ```bash
 cd api
-npm install
+py -3 -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+py -3 main.py
 ```
 
-Start infrastructure (Hãy tải phần mềm docker desktop, bật lên rồi chạy lệnh dưới)
-```bash
-docker-compose up -d 
-```
-Thiết lập OpenAI (sửa `api/.env`):
-- `OPENAI_API_KEY=...`
-- (tuỳ chọn) `OPENAI_CHAT_MODEL=gpt-4o-mini`
-- (tuỳ chọn) `OPENAI_EMBEDDING_MODEL=text-embedding-3-small`
+Lenh trong CLI:
+- `/reset`: xoa lich su chat
+- `/status`: xem tong so document/chunk trong Qdrant
+- `/ingest`: quet MinIO va ingest file moi vao Qdrant (neu da cau hinh MINIO)
+- `/ingest --force`: ingest lai tat ca file tim thay trong MinIO
+- `/exit` hoac `/quit`: thoat
 
-Start API (Hệ thống tự động ingest dữ liệu từ MinIO, sau đó tiến hành embedding)
-```bash
-npm run dev
-```
+## Bien moi truong bat buoc
 
+File `api/.env` can toi thieu:
+- `QDRANT_URL`
+- `QDRANT_COLLECTION`
+- `OPENAI_API_KEY`
+- `INGEST_BATCH_SIZE` (tuy chon, mac dinh `32`, tang de ingest nhanh hon)
+
+Neu muon ingest tu MinIO, can them:
+- `MINIO_ENDPOINT`
+- `MINIO_PORT`
+- `MINIO_ACCESS_KEY`
+- `MINIO_SECRET_KEY`
+- `MINIO_BUCKET_NAME`
+- `MINIO_USE_SSL` (tuy chon, mac dinh `false`)
+- `MINIO_BASE_PREFIX` (tuy chon, mac dinh `rag-processed`)
+
+Neu `/ingest` bao loi ket noi MinIO:
+- Kiem tra dung API port cua MinIO (thuong la `9000`, khong phai console port).
+- Neu dung HTTPS (`MINIO_USE_SSL=true`), nen dat `MINIO_ENDPOINT` la domain khop chung chi SSL (khong nen dung IP).

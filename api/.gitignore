@@ -1,5 +1,10 @@
-node_modules/
-dist/
-uploads/
+__pycache__/
+*.py[cod]
 *.log
+.env.local
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
 .DS_Store
+eval_results

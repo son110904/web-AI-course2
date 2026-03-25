@@ -15,6 +15,8 @@ type Message = {
   timestamp: Date
 }
 
+const BACKEND_API_URL = process.env.NEXT_PUBLIC_BACKEND_API_URL || "http://localhost:4000"
+
 export function ChatbotWidget() {
   const [isOpen, setIsOpen] = useState(false)
   const [isExpanded, setIsExpanded] = useState(false)
@@ -49,8 +51,7 @@ export function ChatbotWidget() {
     setIsThinking(true)
 
     try {
-      // Use Next.js proxy route at `/api` which forwards to BACKEND_API_URL
-      const res = await fetch('/api', {
+      const res = await fetch(`${BACKEND_API_URL}/api/demo_agent/v1/ask`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

@@ -1,0 +1,8 @@
+fastapi==0.116.1
+uvicorn==0.35.0
+python-dotenv==1.1.1
+requests==2.32.5
+minio==7.2.18
+pypdf==6.0.0
+mammoth==1.11.0
+openpyxl==3.1.5
